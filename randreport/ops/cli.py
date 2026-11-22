@@ -326,6 +326,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "verify-backup",
             "import-news",
             "webhook",
+            "getupdates",
             "prune-backups",
             "rollback",
         ],
@@ -358,6 +359,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--host", default=_env("RANREPORT_WEBHOOK_HOST", "127.0.0.1"), help="адрес webhook (action=webhook)")
     parser.add_argument("--port", type=int, default=int(_env("RANREPORT_WEBHOOK_PORT", "8081") or 8081), help="порт webhook (action=webhook)")
     parser.add_argument(
+        "--limit",
+        type=int,
+        default=100,
+        help="сколько обновлений забрать за один getUpdates (action=getupdates)",
+    )
+    parser.add_argument(
         "--encrypt",
         action="store_true",
         help="записать резервную копию зашифрованной (пароль из RANREPORT_BACKUP_PASSPHRASE)",
@@ -379,6 +386,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _run_import(args)
     if args.action == "webhook":
         return _run_webhook(args)
+    if args.action == "getupdates":
+        return _run_getupdates(args)
     return _run_nightly(args)
 
 
@@ -475,6 +484,52 @@ def _run_webhook(args: argparse.Namespace) -> int:
             httpd.serve_forever()
         except KeyboardInterrupt:  # pragma: no cover - operator interrupt
             pass
+    return 0
+
+
+def _run_getupdates(args: argparse.Namespace) -> int:
+    """Drain the pending public posts once, without a webhook.
+
+    The webhook is the other intake; when none is registered (checked through
+    ``getWebhookInfo``) this short poll is the domain-less equivalent.  It never
+    registers nor deletes a webhook, and only the allowed channel's posts and
+    edits are stored (durably, before the offset moves).
+    """
+
+    from ..connectors.transport import UrllibTransport
+    from ..inbox.polling import PollingError, WebhookActive, poll_into_inbox
+
+    token = _env("TELEGRAM_BOT_TOKEN")
+    channels = [part.strip() for part in (_env("TELEGRAM_PUBLIC_CHANNEL") or "").split(",") if part.strip()]
+    if not token or not channels:
+        print(
+            "getupdates needs TELEGRAM_BOT_TOKEN and TELEGRAM_PUBLIC_CHANNEL",
+            file=sys.stderr,
+        )
+        return 2
+    conn = _open_db(args.db)
+    if conn is None:
+        print(f"cannot open the database at {args.db}", file=sys.stderr)
+        return 5
+    try:
+        try:
+            report = poll_into_inbox(
+                conn,
+                UrllibTransport(),
+                bot_token=token,
+                allowed_channels=channels,
+                base_url=_env("TELEGRAM_BASE_URL") or "https://api.telegram.org",
+                limit=args.limit,
+            )
+        except WebhookActive as exc:
+            print(f"getupdates refused: {exc}", file=sys.stderr)
+            return 2
+        except PollingError as exc:
+            print(f"getupdates failed: {exc}", file=sys.stderr)
+            return 2
+    finally:
+        conn.close()
+    print(json.dumps(report.as_dict(), ensure_ascii=False, sort_keys=True))
     return 0
 
 

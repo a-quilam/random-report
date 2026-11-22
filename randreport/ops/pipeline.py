@@ -321,7 +321,13 @@ def build_releases(
             # the allowlisted report archive travels inside the release, so the
             # public site can render /reports/* without the private database
             from ..web.build import release_files
+            from .publish import prune_superseded_releases
 
             publish_release(release_dir, release.release_id, release_files(release, conn))
+            # a rebuild of a period (after a code or map change) creates a new
+            # content-addressed directory; the superseded one is removed so the
+            # stale projection can never be served (private-store revisions and
+            # the /reports/* archive are untouched — this is only the public dir)
+            prune_superseded_releases(release_dir, period_label=period.label, keep_id=release.release_id)
         built.append((period.label, release.release_id))
     return built

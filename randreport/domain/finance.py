@@ -475,19 +475,27 @@ def _sum_class(classifications: Sequence[Classification], economic_class: Econom
 
 
 def _category_rows(classifications: Sequence[Classification], policy: ScopePolicy) -> tuple[CategoryTotal, ...]:
-    grouped: dict[tuple[str | None, EconomicClass], list[Classification]] = defaultdict(list)
+    # An unclassified category is never published one row per source category:
+    # the owner has not approved those sums, so the per-category detail stays
+    # private and what is published is the aggregate, split only by direction
+    # (the same two numbers the unclassified totals already show).  A named
+    # category, once the map confirms it, is published on its own row.
+    grouped: dict[tuple[str | None, EconomicClass, str], list[Classification]] = defaultdict(list)
     for classification in classifications:
         if classification.economic_class is EconomicClass.INTERNAL_TRANSFER:
             continue  # transfers never change the money of the contour and are not categories
-        grouped[(classification.category_id, classification.economic_class)].append(classification)
+        if classification.economic_class is EconomicClass.UNCLASSIFIED:
+            grouped[(None, classification.economic_class, classification.direction)].append(classification)
+        else:
+            grouped[(classification.category_id, classification.economic_class, "")].append(classification)
 
     bucket_totals: dict[str, int] = defaultdict(int)
-    for (category_id, economic_class), rows in grouped.items():
+    for (_category_id, economic_class, _direction), rows in grouped.items():
         bucket_totals[economic_class.value] += sum_kopecks(r.amount_kopecks for r in rows)
 
     totals: list[CategoryTotal] = []
-    for (category_id, economic_class), rows in sorted(
-        grouped.items(), key=lambda item: (item[0][1].value, item[0][0] or "")
+    for (category_id, economic_class, _direction), rows in sorted(
+        grouped.items(), key=lambda item: (item[0][1].value, item[0][0] or "", item[0][2])
     ):
         amount = sum_kopecks(r.amount_kopecks for r in rows)
         reveal = policy.reveals_operations_count(category_id, amount)

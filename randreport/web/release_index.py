@@ -157,16 +157,33 @@ class ReleaseIndex:
         return self._load_release(release_id)
 
     def by_period(self, period_label: str) -> Release | None:
-        """The newest published release whose money section covers ``period_label``."""
+        """The release the site must serve for ``period_label``.
 
-        for release_id in reversed(self.ids()):
+        Release ids are content hashes with no order, so the choice is explicit:
+        the *current* release when it covers the period, otherwise the newest
+        published directory by modification time. Duplicates for one period are
+        pruned at publication time; this keeps the answer deterministic even if a
+        stale directory ever survives.
+        """
+
+        candidates: list[Release] = []
+        for release_id in self.ids():
             release = self._load_release(release_id)
             if release is None:
                 continue
             money = release.money
             if money is not None and money.period.requested == period_label:
+                candidates.append(release)
+        if not candidates:
+            return None
+        current = self.current_id()
+        for release in candidates:
+            if release.release_id == current:
                 return release
-        return None
+        root = self.root
+        if root is None:  # pragma: no cover - ids() is empty without a root
+            return candidates[-1]
+        return max(candidates, key=lambda release: (root / release.release_id).stat().st_mtime)
 
     def periods(self) -> tuple[str, ...]:
         out: list[str] = []

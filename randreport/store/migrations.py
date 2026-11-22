@@ -555,12 +555,29 @@ _MIGRATION_5 = (
     """,
 )
 
+# --- migration 6: the durable getUpdates offset ---------------------------- #
+# A webhook needs a public TLS endpoint; without one the same intake runs as a
+# short getUpdates poll (``randreport/inbox/polling.py``).  The offset is kept
+# here, in the private store, and it is advanced only *after* the inbox rows of
+# the same poll are committed, so a crash between the two re-reads the same
+# updates and the ``update_id`` key deduplicates them — nothing is lost.
+_MIGRATION_6 = (
+    """
+    CREATE TABLE telegram_poll_state (
+        key        TEXT PRIMARY KEY,
+        value      TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    )
+    """,
+)
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(1, "initial public-contract schema", _INITIAL),
     Migration(2, "llm cache, budget ledger and deferred jobs", _MIGRATION_2),
     Migration(3, "admin sessions, news revisions, drafts and annotations", _MIGRATION_3),
     Migration(4, "an occurrence revision is an opaque text token", _MIGRATION_4),
     Migration(5, "passive Telegram webhook inbox for public channel posts", _MIGRATION_5),
+    Migration(6, "durable getUpdates offset for the domain-less intake", _MIGRATION_6),
 )
 
 # Tables required by docs/REQUIREMENTS.md section 10.

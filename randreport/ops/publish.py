@@ -79,6 +79,42 @@ def latest_published_release(root: str | Path | None, *, link_name: str = CURREN
     return os.readlink(link)
 
 
+def prune_superseded_releases(root: str | Path | None, *, period_label: str, keep_id: str) -> int:
+    """Delete older published releases that cover the same period as ``keep_id``.
+
+    A release id is a content hash, so re-building a period after a code or map
+    change creates a *new* directory and the previous one is left behind.  Two
+    releases for one period would both pass the allowlist, and the public site
+    would then be able to serve the stale one (``by_period`` used to pick by name,
+    which has no order).  The superseded directory is removed here so what is
+    published for a period is always exactly the newest build, and the stale
+    projection cannot leak from the disk.  The current symlink is never touched.
+    """
+
+    base = _release_root(root)
+    if not base.is_dir():
+        return 0
+    removed = 0
+    for entry in sorted(base.iterdir()):
+        if entry.is_symlink() or not entry.is_dir() or not entry.name.startswith("rel_"):
+            continue
+        if entry.name == keep_id:
+            continue
+        money = entry / "money.json"
+        try:
+            payload = json.loads(money.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            # a broken sibling is not a same-period release we can prove safe to
+            # delete; leave it (the allowlist will refuse it when it is read)
+            continue
+        period = payload.get("period")
+        requested = period.get("requested") if isinstance(period, dict) else None
+        if requested == period_label:
+            shutil.rmtree(entry, ignore_errors=True)
+            removed += 1
+    return removed
+
+
 def previous_published_release(root: str | Path | None, *, link_name: str = CURRENT) -> str | None:
     """The release published just before the current one, if any.
 

@@ -11,11 +11,14 @@ the more conservative one is the default:
   promoting it would put a private record's date on the public calendar, so the
   uncertain case is resolved conservatively — fewer records, never more.
 
-* ``contains`` — the title must contain one of the configured words *as a whole
-  word*, compared case-insensitively (the owner's recorded rule in
-  the recorded rule: ``source_title_contains_word`` with ``case_sensitive:
+* ``contains`` — the title must contain one of the configured words as a
+  *substring*, compared case-insensitively (the owner's recorded rule:
+  ``source_title_contains_word`` with ``case_sensitive:
   false``).  This is *less* conservative on purpose and is only active when it is
-  configured explicitly; it is never the default.
+  configured explicitly; it is never the default.  A plain substring match is
+  what the recorded rule literally says, so a word glued into a longer name
+  (``Коммусобрание``) counts as a meeting too — the boundary is the configured
+  word, not whitespace.
 
 The raw title is used only to classify; the public label is a constant
 (``EventTypeMapping.meeting_label``), so the source title never leaves the domain.
@@ -52,8 +55,10 @@ def is_meeting_title(title: str | None, titles: AbstractSet[str] = DEFAULT_MEETI
 def _contains_word(title: str, word: str) -> bool:
     """True when ``word`` occurs in ``title`` as a whole word.
 
-    ``str.isalpha`` decides the boundary rather than ``re``'s ``\\b``, which does
-    not treat Cyrillic letters as word characters.
+    Kept for the admin near-miss hint (``looks_like_meeting_title``), where a
+    boundary distinguishes a word from a longer unrelated token.  The active
+    ``contains`` *matching* mode is a plain case-insensitive substring, so this
+    helper is no longer what decides a meeting.
     """
 
     start = 0
@@ -88,9 +93,11 @@ def matches_meeting_title(
         return False
     if mode == MATCH_EXACT:
         return title in titles
+    # ``contains`` is a substring test on purpose: the owner's rule is literally
+    # "the title contains the word" (``source_title_contains_word``), so the word
+    # may sit inside a longer, glued name (``Коммусобрание``).
     lowered = title.casefold()
-    words = [candidate.casefold() for candidate in titles if candidate]
-    return any(_contains_word(lowered, word) for word in words)
+    return any(candidate.casefold() in lowered for candidate in titles if candidate)
 
 
 def looks_like_meeting_title(title: str | None, titles: AbstractSet[str] = DEFAULT_MEETING_TITLES) -> bool:
