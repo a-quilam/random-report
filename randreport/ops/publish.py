@@ -22,8 +22,23 @@ class PublishError(RuntimeError):
     """A publication that could not be completed atomically."""
 
 
+def _release_root(root: str | Path | None) -> Path:
+    """The release directory, refused when the caller passed no usable path.
+
+    ``None`` is not a path: ``Path(None)`` raises a bare ``TypeError`` deep inside the
+    publisher, and a plain ``str()`` would create a directory named ``None`` next to the
+    working directory. Both are refused here as one human sentence (card t_3eeb34dc).
+    """
+
+    if root is None:
+        raise PublishError("a release directory is required")
+    if not isinstance(root, (str, os.PathLike)):
+        raise PublishError(f"a release directory must be a string or a path, not {root!r}")
+    return Path(root)
+
+
 def publish_release(
-    root: str | Path,
+    root: str | Path | None,
     release_id: str,
     files: Mapping[str, str],
     *,
@@ -31,7 +46,8 @@ def publish_release(
 ) -> Path:
     """Write ``files`` as release ``release_id`` and atomically point ``current`` at it."""
 
-    base = Path(root)
+    base = _release_root(root)
+
     base.mkdir(parents=True, exist_ok=True)
     target = base / release_id
     if not target.exists():
@@ -56,14 +72,14 @@ def publish_release(
     return target
 
 
-def latest_published_release(root: str | Path, *, link_name: str = CURRENT) -> str | None:
-    link = Path(root) / link_name
+def latest_published_release(root: str | Path | None, *, link_name: str = CURRENT) -> str | None:
+    link = _release_root(root) / link_name
     if not link.is_symlink() and not link.exists():
         return None
     return os.readlink(link)
 
 
-def previous_published_release(root: str | Path, *, link_name: str = CURRENT) -> str | None:
+def previous_published_release(root: str | Path | None, *, link_name: str = CURRENT) -> str | None:
     """The release published just before the current one, if any.
 
     Release ids are content hashes, so they carry no order: the publication order
@@ -72,7 +88,7 @@ def previous_published_release(root: str | Path, *, link_name: str = CURRENT) ->
     published* revision, never on a freshly built one (docs/DEPLOYMENT.md §7).
     """
 
-    base = Path(root)
+    base = _release_root(root)
     if not base.is_dir():
         return None
     entries = [
@@ -90,7 +106,7 @@ def previous_published_release(root: str | Path, *, link_name: str = CURRENT) ->
     return order[index - 1] if index > 0 else None
 
 
-def rollback_release(root: str | Path, release_id: str, *, link_name: str = CURRENT) -> dict[str, Any]:
+def rollback_release(root: str | Path | None, release_id: str, *, link_name: str = CURRENT) -> dict[str, Any]:
     """Atomically point ``link_name`` back at an existing, verified release.
 
     The target is loaded through the public allowlist (:class:`ReleaseIndex`)
@@ -106,7 +122,7 @@ def rollback_release(root: str | Path, release_id: str, *, link_name: str = CURR
 
     from ..web.release_index import ReleaseIndex  # local import: keeps ops free of web at import time
 
-    base = Path(root)
+    base = _release_root(root)
     if not base.is_dir():
         raise PublishError(f"publish directory does not exist: {base}")
     name = str(release_id)

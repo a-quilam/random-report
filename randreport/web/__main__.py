@@ -26,7 +26,7 @@ from typing import Any, Iterator, Sequence
 
 from .. import leakguard
 from ..bindguard import BindRefused, assert_bind_allowed
-from ..domain.timeframes import parse_period
+from ..domain.timeframes import PeriodError, parse_period
 from ..store import apply_migrations, connect
 from ..store import repository as repo
 from . import reports as reports_module
@@ -150,11 +150,32 @@ def cmd_build(args: argparse.Namespace) -> int:
     if not period_labels:
         print("--periods is required (comma-separated YYYY-MM or YYYY)", file=sys.stderr)
         return 2
-    periods = [parse_period(label) for label in period_labels]
-    with _open_db(args.db) as conn:
+    # both paths are resolved (argument, then environment) and refused *before* anything
+    # is opened: a build with no store would otherwise create a database named "None"
+    # in the working directory, and one with no release directory would build into
+    # nothing at all (card t_3eeb34dc)
+    db = args.db or _env("RANREPORT_DB")
+    if not db:
+        print("a private store path is required (--db or RANREPORT_DB)", file=sys.stderr)
+        return 2
+    release_dir = args.release_dir or _env("RANREPORT_RELEASE_DIR")
+    if not release_dir:
+        print(
+            "a release directory is required (--release-dir or RANREPORT_RELEASE_DIR)",
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        periods = [parse_period(label) for label in period_labels]
+    except PeriodError as exc:
+        # an unsupported period is a human refusal, not a traceback (the same
+        # sentence the nightly CLI prints)
+        print(f"unsupported period: {exc}", file=sys.stderr)
+        return 2
+    with _open_db(db) as conn:
         published = build_and_publish(
             conn,
-            release_dir=args.release_dir,
+            release_dir=release_dir,
             periods=periods,
             now=datetime.now(timezone.utc),
             freshness=args.freshness,
