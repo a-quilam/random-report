@@ -371,11 +371,41 @@ def _event_manifest(conn: sqlite3.Connection) -> Mapping[str, Any]:
 # events
 # --------------------------------------------------------------------------- #
 
+def _mapping_from_manifest(version: str, mapping: Mapping[str, Any]):
+    """Build the domain mapping from a stored payload, so the desk shows the same view."""
+
+    from ..domain.events import SOURCE_TYPES, EventType, EventTypeMapping
+
+    known = {event_type.value for event_type in SOURCE_TYPES}
+    types = {
+        str(key): EventType(str(value))
+        for key, value in (mapping.get("subcalendar_types") or {}).items()
+        if str(value) in known
+    }
+
+    def ids(key: str) -> frozenset[str]:
+        return frozenset(str(item) for item in (mapping.get(key) or ()))
+
+    titles = ids("meeting_titles")
+    from ..domain.meeting_title import DEFAULT_MEETING_TITLES
+
+    return EventTypeMapping(
+        version=version,
+        subcalendar_types=types,
+        private_subcalendars=ids("private_subcalendars"),
+        excluded_subcalendars=ids("excluded_subcalendars"),
+        meeting_subcalendars=ids("meeting_subcalendars"),
+        rent_subcalendars=ids("rent_subcalendars"),
+        meeting_titles=titles or DEFAULT_MEETING_TITLES,
+    )
+
+
 def events_rows(conn: sqlite3.Connection, *, period: str | None = None, limit: int = MONEY_LIMIT) -> tuple[dict[str, Any], ...]:
+    from ..domain.events import PUBLIC_TYPES, EventType
+
     loaded = repo.load_event_mapping(conn)
-    mapping = {} if loaded is None else dict(loaded[1])
-    types = {str(key): str(value) for key, value in (mapping.get("subcalendar_types") or {}).items()}
-    private = {str(item) for item in (mapping.get("private_subcalendars") or ())}
+    version, mapping = ("unmapped", {}) if loaded is None else (str(loaded[0]), dict(loaded[1]))
+    event_mapping = _mapping_from_manifest(version, mapping)
     out: list[dict[str, Any]] = []
     for row in conn.execute(
         "SELECT * FROM calendar_occurrences WHERE deleted = 0 ORDER BY start_utc DESC LIMIT ?", (max(limit, 1) * 3,)
@@ -383,7 +413,14 @@ def events_rows(conn: sqlite3.Connection, *, period: str | None = None, limit: i
         if period and not str(row["start_utc"]).startswith(period):
             continue
         subcalendars = [str(item) for item in json.loads(row["subcalendar_ids"])]
-        event_type = types.get(subcalendars[0], "unknown") if subcalendars else "unknown"
+        if event_mapping.is_excluded(subcalendars):
+            event_type = "excluded"
+            public = False
+        else:
+            base_type = event_mapping.event_type(subcalendars)
+            refined = event_mapping.closed_kind(subcalendars, row["title"]) if base_type == EventType.CLOSED else base_type
+            event_type = refined.value
+            public = base_type in PUBLIC_TYPES and not event_mapping.is_private(subcalendars)
         out.append(
             {
                 "calendar_id": str(row["calendar_id"]),
@@ -394,7 +431,7 @@ def events_rows(conn: sqlite3.Connection, *, period: str | None = None, limit: i
                 "all_day": bool(row["all_day"]),
                 "subcalendars": subcalendars,
                 "event_type": event_type,
-                "public": event_type in ("open", "open_by_registration") and not any(item in private for item in subcalendars),
+                "public": public,
                 "source_present": bool(row["source_present"]),
                 "local_archive": bool(row["local_archive"]),
                 "check_state": checks.effective_state(conn, "calendar_occurrence", f"{row['calendar_id']}|{row['occurrence_id']}"),
@@ -413,8 +450,15 @@ def set_event_mapping(
     private: bool,
     actor: str,
     now: str | None = None,
+    excluded: bool | None = None,
+    meeting_contour: bool | None = None,
+    rent: bool | None = None,
 ) -> str:
-    """Record a *new* event-mapping version; the previous versions stay."""
+    """Record a *new* event-mapping version; the previous versions stay.
+
+    ``excluded``, ``meeting_contour`` and ``rent`` refine the closed contour by
+    stable subcalendar ID; ``None`` leaves the current role untouched.
+    """
 
     allowed = {"open", "open_by_registration", "closed", "internal_meeting", "preparation", "unknown"}
     if event_type not in allowed:
@@ -428,15 +472,42 @@ def set_event_mapping(
         private_ids.add(str(subcalendar_id))
     else:
         private_ids.discard(str(subcalendar_id))
+
+    def _role(key: str, flag: bool | None) -> list[str]:
+        ids = {str(item) for item in (payload.get(key) or ())}
+        if flag is True:
+            ids.add(str(subcalendar_id))
+        elif flag is False:
+            ids.discard(str(subcalendar_id))
+        return sorted(ids)
+
     version = _next_version(conn, "event_type_mapping", "event-map")
-    repo.record_event_mapping(conn, version=version, payload={"subcalendar_types": types, "private_subcalendars": sorted(private_ids)}, now=now)
+    new_payload = {
+        "subcalendar_types": types,
+        "private_subcalendars": sorted(private_ids),
+        "excluded_subcalendars": _role("excluded_subcalendars", excluded),
+        "meeting_subcalendars": _role("meeting_subcalendars", meeting_contour),
+        "rent_subcalendars": _role("rent_subcalendars", rent),
+    }
+    if payload.get("meeting_titles"):
+        new_payload["meeting_titles"] = sorted(str(item) for item in payload["meeting_titles"])
+    if payload.get("meeting_label"):
+        new_payload["meeting_label"] = str(payload["meeting_label"])
+    repo.record_event_mapping(conn, version=version, payload=new_payload, now=now)
     repo.audit(
         conn,
         action="mapping.event.updated",
         actor=actor,
         entity_type="event_type_mapping",
         entity_key=str(subcalendar_id),
-        detail={"version": version, "type": event_type, "private": private},
+        detail={
+            "version": version,
+            "type": event_type,
+            "private": private,
+            "excluded": excluded,
+            "meeting_contour": meeting_contour,
+            "rent": rent,
+        },
         now=now,
     )
     checks.invalidate_for_mapping(conn, kind="event", version=version, actor=actor, now=now)
@@ -596,6 +667,13 @@ def settings_view(conn: sqlite3.Connection, *, now: datetime | None = None) -> d
             - {str(key) for key in (manifest.get("category_classes") or {})}
         ),
         "event_types": dict(_event_manifest(conn).get("subcalendar_types") or {}),
+        "event_contour": {
+            "private": sorted(_event_manifest(conn).get("private_subcalendars") or ()),
+            "excluded": sorted(_event_manifest(conn).get("excluded_subcalendars") or ()),
+            "meeting": sorted(_event_manifest(conn).get("meeting_subcalendars") or ()),
+            "rent": sorted(_event_manifest(conn).get("rent_subcalendars") or ()),
+            "meeting_titles": sorted(_event_manifest(conn).get("meeting_titles") or ()),
+        },
         "donor_rule": DONOR_RULE,
         "news_sources": news_sources,
         "members": [

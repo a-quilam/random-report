@@ -91,14 +91,22 @@ svg.trend { width: 100%; height: 12rem; background: #fffdf7; border: 1px solid v
 .trend-line { fill: none; stroke: var(--violet); stroke-width: 2; vector-effect: non-scaling-stroke; }
 
 .coverage { margin: 1rem 0; }
-.bar { display: flex; height: 2.6rem; background: #fffdf7; border: 1px solid var(--line); overflow: hidden; }
-.seg { display: flex; align-items: center; overflow: hidden; color: #fff; font-size: .78rem; min-width: 0; }
-.seg-label { padding: 0 .45rem; white-space: nowrap; }
-.seg-0 { background: var(--violet); }
-.seg-1 { background: var(--pink); }
-.seg-2 { background: var(--green); }
-.seg-3 { background: var(--ink-soft); }
-.seg-missing { background: repeating-linear-gradient(45deg, #b9a98d 0 6px, #cfc0a4 6px 12px); color: var(--ink); }
+/* The coverage bar is SVG: its segment widths are geometry attributes, so they
+   survive a strict `style-src 'self'` policy that would drop an inline width. */
+.coverage-bar { display: block; width: 100%; height: 2.6rem; background: #fffdf7; border: 1px solid var(--line); }
+.coverage-bar .seg-0 { fill: var(--violet); }
+.coverage-bar .seg-1 { fill: var(--pink); }
+.coverage-bar .seg-2 { fill: var(--green); }
+.coverage-bar .seg-3 { fill: var(--ink-soft); }
+.coverage-bar .seg-missing { fill: #cfc0a4; }
+.coverage-legend { list-style: none; padding: 0; margin: .5rem 0 0; display: flex; flex-wrap: wrap; gap: .3rem 1rem; font-size: .92rem; color: var(--ink-soft); }
+.coverage-legend li { display: flex; align-items: center; gap: .35rem; }
+.swatch { width: .85rem; height: .85rem; border: 1px solid var(--line); display: inline-block; flex: none; }
+.swatch.seg-0 { background: var(--violet); }
+.swatch.seg-1 { background: var(--pink); }
+.swatch.seg-2 { background: var(--green); }
+.swatch.seg-3 { background: var(--ink-soft); }
+.swatch.seg-missing { background: repeating-linear-gradient(45deg, #b9a98d 0 4px, #cfc0a4 4px 8px); }
 
 .empty { border: 2px dashed var(--line); padding: 1rem; background: var(--paper-2); }
 .empty p { margin: 0 0 .4rem; }
@@ -113,6 +121,7 @@ svg.trend { width: 100%; height: 12rem; background: #fffdf7; border: 1px solid v
 .grid td.day .day-num { font-variant-numeric: tabular-nums; }
 .grid td.day.has-event { background: #f0e4f4; }
 .day-mark { color: var(--violet); font-weight: bold; margin-left: .3rem; }
+.day-mark-meeting { color: #2f6f4f; }
 
 .card { border: 1px solid var(--line); background: #fffdf7; padding: .9rem 1rem; margin: 1rem 0; }
 .card h2 { border: 0; margin: 0 0 .3rem; font-size: 1.2rem; }

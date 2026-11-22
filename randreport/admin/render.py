@@ -294,12 +294,19 @@ def events_panel(rows: Sequence[Mapping[str, Any]], *, csrf: str) -> str:
     )
     mapping_form = (
         '<h2>Локальное сопоставление подкалендарей</h2>'
-        "<p>Правка календаря делается в Teamup; здесь меняется только локальное сопоставление типа и публичности.</p>"
+        "<p>Правка календаря делается в Teamup; здесь меняется только локальное сопоставление типа, публичности и ролей закрытого контура. "
+        "Собрания распознаются только по точному названию «Собрания» внутри разрешённого контура; подстрока собранием не считается.</p>"
         f'<form method="post" action="/admin/actions/mapping/event" class="action">'
         f'<input type="hidden" name="csrf" value="{e(csrf)}">'
         '<label for="subcalendar">Подкалендарь</label><input id="subcalendar" name="subcalendar_id">'
         '<label for="etype">Тип</label><input id="etype" name="event_type" placeholder="open|closed|internal_meeting|preparation|unknown">'
         '<label for="private">Приватность</label><input id="private" name="private" placeholder="да/нет">'
+        '<label for="excluded">Исключить полностью (ни списков, ни итогов)</label>'
+        '<input id="excluded" name="excluded" type="checkbox" value="1">'
+        '<label for="meeting_contour">Разрешённый контур собраний</label>'
+        '<input id="meeting_contour" name="meeting_contour" type="checkbox" value="1">'
+        '<label for="rent">Закрытая аренда</label>'
+        '<input id="rent" name="rent" type="checkbox" value="1">'
         '<button type="submit">Записать новую версию сопоставления</button></form>'
     )
     return f"<h1>События</h1>{body}{mapping_form}"

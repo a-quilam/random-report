@@ -20,13 +20,14 @@ RUN_HOUR_MSK = 3
 SYSTEMD_CALENDAR = f"*-*-* {RUN_HOUR_MSK:02d}:00:00 Europe/Moscow"
 
 SYSTEMD_TIMER_UNIT = """# Template only: do not install before a server is chosen (docs/RUNBOOK.md).
+# The same timer is kept in sync with deploy/randreport-sync.timer.
 [Unit]
-Description=RanDom nightly report sync (03:00 Europe/Moscow)
+Description=RanDom nightly sync timer (03:00 Europe/Moscow)
 
 [Timer]
 OnCalendar={calendar}
 Persistent=true
-Unit=randreport-nightly.service
+Unit=randreport-sync.service
 
 [Install]
 WantedBy=timers.target

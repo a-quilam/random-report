@@ -40,6 +40,11 @@ SECTION_TYPES: Mapping[str, type] = {
 
 CURRENT = "current"
 
+#: The file in a release that carries the allowlisted version archive of period
+#: reports. The public process renders ``/reports/*`` from it, so it never has to
+#: open the private database.
+REPORTS_FILE = "reports.json"
+
 
 class ReleaseReadError(RuntimeError):
     """A release on disk is missing, unreadable or outside the allowlist."""
@@ -172,6 +177,43 @@ class ReleaseIndex:
             if release.period_label not in out:
                 out.append(release.period_label)
         return tuple(out)
+
+    # --- the public report archive (no database) --------------------------- #
+
+    def reports(self) -> Mapping[str, Any]:
+        """The allowlisted version archive of period reports, or ``{}``.
+
+        Read from the current release; when that release predates the archive, the
+        newest release that carries one is used, so a rollback to an older release
+        never takes ``/reports/*`` down with it.
+        """
+
+        if not self.exists():
+            return {}
+        assert self.root is not None
+        current = self.current_id()
+        order = [current, *reversed(self.ids())] if current else list(reversed(self.ids()))
+        seen: set[str] = set()
+        for release_id in order:
+            if release_id is None or release_id in seen:
+                continue
+            seen.add(release_id)
+            path = self.root / release_id / REPORTS_FILE
+            if not path.exists():
+                continue
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            # an empty archive means "this release predates the archive"; keep
+            # looking so a rollback to an older release never drops /reports/*
+            if isinstance(data, Mapping) and data:
+                return data
+        return {}
+
+    def report_entry(self, period_label: str) -> Mapping[str, Any] | None:
+        entry = self.reports().get(period_label)
+        return entry if isinstance(entry, Mapping) else None
 
 
 def release_mtime(root: str | Path | None) -> datetime | None:

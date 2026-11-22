@@ -384,23 +384,32 @@ class PublicSite:
         versions_rows: list[tuple[str, str, str, str]] = []
         if conn is not None:
             stored = reports_module.public_view(conn, label)
-            if stored.get("versions"):
-                public = stored
-                for item in stored["versions"]:
-                    versions_rows.append(
-                        (
-                            f"v{item['version']}",
-                            render.e(item["published_at"]),
-                            render.e(render.PROVENANCE_LABELS.get(str(item["provenance"]), item["provenance"])),
-                            f'<a href="{render.e(render.safe_url(item["url"]))}">постоянная ссылка</a>',
-                        )
+        else:
+            # the public process has no access to the private database: the version
+            # archive comes from the allowlist store the builder published
+            entry = self.index.report_entry(label)
+            stored = reports_module.view_from_entry(entry) if entry is not None else public
+        if stored.get("versions"):
+            public = stored
+            for item in stored["versions"]:
+                versions_rows.append(
+                    (
+                        f"v{item['version']}",
+                        render.e(item["published_at"]),
+                        render.e(render.PROVENANCE_LABELS.get(str(item["provenance"]), item["provenance"])),
+                        f'<a href="{render.e(render.safe_url(item["url"]))}">постоянная ссылка</a>',
                     )
+                )
         payload = public.get("latest")
         if payload is None and report is not None:
             # no stored snapshot yet: render the published observation itself
             payload = reports_module.snapshot_payload(report)
         if version is not None:
-            payload = reports_module.version_payload(conn, label, int(version)) if conn is not None else None
+            if conn is not None:
+                payload = reports_module.version_payload(conn, label, int(version))
+            else:
+                entry = self.index.report_entry(label)
+                payload = reports_module.version_payload_from_entry(entry, int(version))
             if payload is None:
                 return self._error(404, "Версия отчёта не найдена.")
             public = {**public, "latest": payload, "changed": False, "corrections": ()}

@@ -111,6 +111,11 @@ class ScopePolicy:
     count_visibility_threshold_kopecks: int = 100_000
     sensitive_categories: frozenset[str] = frozenset()
     unclassified_label: str = UNCLASSIFIED_LABEL
+    #: ``False`` when no confirmed map exists for the public contour at all (no
+    #: recorded mapping, no private configuration).  The contour is then
+    #: *unknown*: every indicator stays ``None`` — a missing map is not a zero
+    #: and is not an invitation to count unmapped money as a donation.
+    contour_confirmed: bool = True
 
     def account_scope(self, account_id: str) -> AccountScope:
         if account_id in self.public_accounts:
@@ -232,6 +237,7 @@ class ClassifiedLedger:
     period: Period
     policy: ScopePolicy
     data_present: bool
+    contour_confirmed: bool
     classifications: tuple[Classification, ...]
     excluded: tuple[Classification, ...]
     quarantined: tuple[Classification, ...]
@@ -366,6 +372,7 @@ def build_ledger(
         period=period,
         policy=policy,
         data_present=source_data_present,
+        contour_confirmed=policy.contour_confirmed,
         classifications=tuple(classifications),
         excluded=tuple(excluded),
         quarantined=tuple(quarantined),
@@ -500,6 +507,40 @@ def _category_rows(classifications: Sequence[Classification], policy: ScopePolic
     return tuple(totals)
 
 
+def _unknown_totals(period_label: str, complete_period: bool, labels: tuple[str, ...], completeness: str) -> FinanceTotals:
+    """Every indicator unknown: a missing source or a missing map is not a zero."""
+
+    return FinanceTotals(
+        period_label=period_label,
+        complete_period=complete_period,
+        categories=(),
+        expense_kopecks=None,
+        compensation_kopecks=None,
+        subsidy_kopecks=None,
+        uncovered_kopecks=None,
+        coverage_percent=None,
+        coverage_is_final=False,
+        shortfall_kopecks=None,
+        excess_kopecks=None,
+        result_before_subsidy_kopecks=None,
+        result_after_subsidy_kopecks=None,
+        gross_expense_kopecks=None,
+        expense_refund_kopecks=None,
+        external_compensation_kopecks=None,
+        compensation_refund_kopecks=None,
+        commune_subsidy_kopecks=None,
+        unclassified_in_kopecks=None,
+        unclassified_out_kopecks=None,
+        financing_in_kopecks=None,
+        financing_out_kopecks=None,
+        balance_adjustment_kopecks=None,
+        internal_transfer_kopecks=None,
+        category_sum_kopecks=None,
+        completeness=completeness,
+        labels=labels,
+    )
+
+
 def compute_totals(
     ledger: ClassifiedLedger,
     *,
@@ -512,35 +553,16 @@ def compute_totals(
     complete_period = ledger.period.is_complete(as_of) if as_of is not None else True
 
     if not ledger.data_present:
-        return FinanceTotals(
-            period_label=period_label,
-            complete_period=complete_period,
-            categories=(),
-            expense_kopecks=None,
-            compensation_kopecks=None,
-            subsidy_kopecks=None,
-            uncovered_kopecks=None,
-            coverage_percent=None,
-            coverage_is_final=False,
-            shortfall_kopecks=None,
-            excess_kopecks=None,
-            result_before_subsidy_kopecks=None,
-            result_after_subsidy_kopecks=None,
-            gross_expense_kopecks=None,
-            expense_refund_kopecks=None,
-            external_compensation_kopecks=None,
-            compensation_refund_kopecks=None,
-            commune_subsidy_kopecks=None,
-            unclassified_in_kopecks=None,
-            unclassified_out_kopecks=None,
-            financing_in_kopecks=None,
-            financing_out_kopecks=None,
-            balance_adjustment_kopecks=None,
-            internal_transfer_kopecks=None,
-            category_sum_kopecks=None,
-            completeness="unknown",
-            labels=("no_data",),
-        )
+        return _unknown_totals(period_label, complete_period, ("no_data",), "unknown")
+
+    if not ledger.contour_confirmed:
+        # the public contour itself is unconfirmed (no recorded mapping, no
+        # private configuration): no sum may be published as if it were the
+        # contour's money — the indicators stay unknown with a visible warning
+        labels = ["contour_unconfirmed"]
+        if not complete_period:
+            labels.append("period_incomplete")
+        return _unknown_totals(period_label, complete_period, tuple(labels), "unknown")
 
     rows = _category_rows(ledger.classifications, ledger.policy)
     gross = _sum_class(ledger.classifications, EconomicClass.OPERATING_EXPENSE)
@@ -646,7 +668,7 @@ class CheckResult:
 def reconcile_totals(ledger: ClassifiedLedger, totals: FinanceTotals) -> tuple[CheckResult, ...]:
     """Reconcile category rows with the aggregate fields of the same query."""
 
-    if not ledger.data_present:
+    if not ledger.data_present or not ledger.contour_confirmed:
         return ()
 
     expected = {

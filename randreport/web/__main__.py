@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any, Iterator, Sequence
 
 from .. import leakguard
+from ..bindguard import BindRefused, assert_bind_allowed
 from ..domain.timeframes import parse_period
 from ..store import apply_migrations, connect
 from ..store import repository as repo
@@ -84,12 +85,32 @@ def cmd_serve(args: argparse.Namespace) -> int:
 
     host = str(args.host or _env("RANREPORT_HOST", "127.0.0.1"))
     port = int(str(args.port or _env("RANREPORT_PORT", "8099")))
-    with _served_site(args) as site, make_server(host, port, site) as httpd:
-        print(f"public site on http://{host}:{port}/  (release dir: {site.index.root})", flush=True)
-        try:
-            httpd.serve_forever()
-        except KeyboardInterrupt:  # pragma: no cover - manual interrupt
-            print("stopped", file=sys.stderr)
+    # the served process must not reach the private store: RANREPORT_DB is ignored
+    # here on purpose and only an explicit staging flag can attach a report DB
+    report_db = getattr(args, "report_db", None) or _env("RANREPORT_REPORT_DB")
+    try:
+        assert_bind_allowed(host, allow_external=bool(getattr(args, "allow_external_bind", False)))
+    except BindRefused as exc:
+        print(f"refused: {exc}", file=sys.stderr)
+        return 2
+    site = PublicSite(
+        release_dir=getattr(args, "release_dir", None) or _env("RANREPORT_RELEASE_DIR"),
+        db_path=report_db,
+        static_dir=getattr(args, "static_dir", None) or _env("RANREPORT_STATIC_DIR"),
+    )
+    try:
+        with make_server(host, port, site) as httpd:
+            print(
+                f"public site on http://{host}:{port}/  (release dir: {site.index.root}; "
+                f"private db: {'staging only' if report_db else 'not opened'})",
+                flush=True,
+            )
+            try:
+                httpd.serve_forever()
+            except KeyboardInterrupt:  # pragma: no cover - manual interrupt
+                print("stopped", file=sys.stderr)
+    finally:
+        site.close()
     return 0
 
 
@@ -144,6 +165,41 @@ def cmd_build(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_rollback(args: argparse.Namespace) -> int:
+    """Move the release pointer back to an existing, verified revision."""
+
+    from ..ops.publish import PublishError, previous_published_release, rollback_release
+    from .release_index import ReleaseIndex
+
+    root = args.release_dir or _env("RANREPORT_RELEASE_DIR")
+    if not root:
+        print("a release directory is required (--release-dir or RANREPORT_RELEASE_DIR)", file=sys.stderr)
+        return 2
+    target = args.to
+    if args.previous and not target:
+        target = previous_published_release(root)
+        if target is None:
+            print("no earlier release to roll back to", file=sys.stderr)
+            return 2
+    if not target:
+        print("give --to RELEASE_ID or --previous", file=sys.stderr)
+        return 2
+    try:
+        if args.dry_run:
+            release = ReleaseIndex(root).get(target)
+            if release is None:
+                print(f"release {target!r} is not present or failed the allowlist", file=sys.stderr)
+                return 2
+            print(json.dumps({"release_id": target, "dry_run": True, "verified": True}, ensure_ascii=False))
+            return 0
+        report = rollback_release(root, target)
+    except PublishError as exc:
+        print(f"refused: {exc}", file=sys.stderr)
+        return 2
+    print(json.dumps(report, ensure_ascii=False, sort_keys=True))
+    return 0 if report["verified"] else 2
+
+
 _LEAK_PATTERNS = (
     re.compile(r"\b(?:acc|occ|cat|sub|cal|pair|tx)_[A-Za-z0-9_]+"),
     re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}"),
@@ -193,6 +249,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     common(serve)
     serve.add_argument("--host", default=None)
     serve.add_argument("--port", default=None)
+    serve.add_argument(
+        "--allow-external-bind",
+        action="store_true",
+        help="permit a non-loopback bind (also needs RANREPORT_ALLOW_EXTERNAL_BIND=1)",
+    )
+    serve.add_argument(
+        "--report-db",
+        default=None,
+        help="staging only: attach a private report DB (RANREPORT_DB is never read by serve)",
+    )
     serve.set_defaults(func=cmd_serve)
 
     export = sub.add_parser("export", help="write a static export of every page")
@@ -225,6 +291,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     check = sub.add_parser("check", help="scan every public page for private leaks")
     common(check)
     check.set_defaults(func=cmd_check)
+
+    rollback = sub.add_parser("rollback", help="point the release dir back at a verified revision")
+    common(rollback)
+    rollback.add_argument("--to", default=None, help="release id to roll back to")
+    rollback.add_argument("--previous", action="store_true", help="use the release before the current one")
+    rollback.add_argument("--dry-run", action="store_true", help="verify the target without moving the pointer")
+    rollback.set_defaults(func=cmd_rollback)
 
     args = parser.parse_args(list(argv) if argv is not None else None)
     try:

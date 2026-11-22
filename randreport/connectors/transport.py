@@ -15,6 +15,24 @@ import urllib.request
 from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping, Protocol, Sequence
 
+from .. import redaction
+
+#: Headers that carry a credential. They are never forwarded across a redirect.
+SENSITIVE_HEADERS = frozenset(
+    {"authorization", "proxy-authorization", "cookie", "x-api-key", "x-auth-token", "x-api-token"}
+)
+
+
+def _origin(url: str) -> tuple[str, str, int]:
+    """(scheme, host, port) with scheme-appropriate default ports filled in."""
+
+    parts = urllib.parse.urlsplit(url)
+    host = (parts.hostname or "").lower()
+    port = parts.port
+    if port is None:
+        port = 443 if parts.scheme == "https" else 80
+    return (parts.scheme.lower(), host, port)
+
 
 @dataclass(frozen=True)
 class Request:
@@ -33,7 +51,9 @@ class Request:
     def as_record(self) -> dict[str, Any]:
         """A redacted request record for tests and logs (no headers, no token)."""
 
-        return {"method": self.method, "url": self.url, "params": dict(self.params), "json_body": self.json_body}
+        return redaction.redact_mapping(
+            {"method": self.method, "url": self.url, "params": dict(self.params), "json_body": self.json_body}
+        )
 
 
 @dataclass(frozen=True)
@@ -103,10 +123,16 @@ class FakeTransport:
 
 
 class UrllibTransport:
-    """Real HTTP transport. Requires real credentials; never used in unit tests."""
+    """Real HTTP transport. Requires real credentials; never used in unit tests.
+
+    Redirects are handled by :class:`_CredentialSafeRedirect`, so a credential is
+    never forwarded to another origin, and an ``HTTPError`` body is read and then
+    explicitly closed so the response does not leak a socket handle.
+    """
 
     def __init__(self, *, timeout_s: float = 20.0) -> None:
         self.timeout_s = timeout_s
+        self._opener = urllib.request.build_opener(_CredentialSafeRedirect())
 
     def send(self, request: Request) -> Response:
         data = None
@@ -118,9 +144,57 @@ class UrllibTransport:
             request.full_url(), data=data, headers=headers, method=request.method
         )
         try:
-            with urllib.request.urlopen(http_request, timeout=request.timeout_s or self.timeout_s) as response:
+            with self._opener.open(http_request, timeout=request.timeout_s or self.timeout_s) as response:
                 return Response(status=response.status, body=response.read(), headers=dict(response.headers))
         except urllib.error.HTTPError as exc:  # pragma: no cover - network path
-            raise HttpStatusError(exc.code, exc.read().decode("utf-8", errors="replace")) from exc
+            # read the body, then close the error response: an HTTPError holds an
+            # open file object and leaving it unclosed leaks the connection.
+            try:
+                body = exc.read().decode("utf-8", errors="replace")
+            finally:
+                try:
+                    exc.close()
+                except Exception:  # noqa: BLE001 - a body-less error has nothing to close
+                    pass
+            raise HttpStatusError(exc.code, redaction.redact(body)) from exc
         except urllib.error.URLError as exc:  # pragma: no cover - network path
-            raise TransportError(str(exc.reason)) from exc
+            raise TransportError(redaction.redact(str(exc.reason))) from exc
+
+
+class _CredentialSafeRedirect(urllib.request.HTTPRedirectHandler):
+    """A redirect handler that never lets a credential cross to another origin.
+
+    ``urllib`` re-sends the caller's headers -- including ``Authorization`` -- on
+    a 3xx by default. Here every sensitive header is removed from the follow-up
+    request, and a redirect that leaves the original origin while the request
+    carried a credential is refused outright: a service that answers with
+    ``302 https://evil.example`` must not be able to make the nightly cycle hand
+    over the Zenmoney token (docs/REQUIREMENTS.md section 9).
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
+        new = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if new is None:
+            return None
+        old_origin = _origin(req.full_url)
+        new_origin = _origin(newurl)
+        carried = [name for name in req.headers if name.lower() in SENSITIVE_HEADERS]
+        carried += [name for name in req.unredirected_hdrs if name.lower() in SENSITIVE_HEADERS]
+
+        if old_origin[0] == "https" and new_origin[0] == "http":
+            raise TransportError("refusing an https->http redirect (credential downgrade)")
+
+        if carried and new_origin != old_origin:
+            raise TransportError(
+                "refusing to forward credentials to another origin across a redirect"
+            )
+
+        for name in carried:
+            # defensive: strip them even on a same-origin redirect, so a
+            # credential is never replayed by the transport without a reason.
+            for holder in (new.headers, new.unredirected_hdrs):
+                holder.pop(name, None)
+                holder.pop(name.title(), None)
+                holder.pop(name.capitalize(), None)
+        return new
+

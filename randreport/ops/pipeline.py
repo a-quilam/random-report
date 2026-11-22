@@ -15,6 +15,7 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
+from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from ..domain.dto import (
@@ -43,6 +44,8 @@ from ..projection.release import (
     release_id_for,
 )
 from ..store import repository as repo
+from .publish import publish_release
+from .schedule import utc_now
 
 RELEASE_PLACEHOLDER = "rel_pending"
 NEWS_CHANNEL_USERNAME = "random_culture"
@@ -135,7 +138,20 @@ class ReleaseBuilder:
         )
         checks = list(reconcile_totals(ledger, totals))
 
-        selection = select_completed(repo.load_occurrences(conn), mapping=self.event_mapping, cutoff=cutoff)
+        selection = select_completed(
+            # The period of a release decides which occurrences it reports: the
+            # calendar section of a monthly or yearly release must describe that
+            # period (docs/REQUIREMENTS.md section 3.3), not the whole 400-day
+            # window. An occurrence belongs to the period of its Moscow start day;
+            # an ``all_time`` release keeps everything.
+            (
+                occurrence
+                for occurrence in repo.load_occurrences(conn)
+                if self.period.contains(occurrence.day())
+            ),
+            mapping=self.event_mapping,
+            cutoff=cutoff,
+        )
         stats = event_stats(selection, cutoff=cutoff)
 
         ctx = ReleaseContext(
@@ -246,3 +262,66 @@ def _urls(source_message_ids: str) -> tuple[str, ...]:
 
     message_ids = json.loads(source_message_ids)
     return tuple(f"https://t.me/{NEWS_CHANNEL_USERNAME}/{mid}" for mid in sorted(message_ids))
+
+
+def build_releases(
+    conn: sqlite3.Connection,
+    *,
+    policy: ScopePolicy,
+    event_mapping: EventTypeMapping,
+    periods: Sequence[Period],
+    release_dir: str | Path | None = None,
+    now: datetime | None = None,
+    freshness: str = "fresh",
+    verification: str = "operational",
+    completeness: str = "complete",
+    source_labels: Sequence[str] = (),
+    finance_data_present: bool = True,
+    rates: Mapping[str, Decimal] | None = None,
+    liabilities: Sequence[Liability] = (),
+) -> list[tuple[str, str]]:
+    """Build and store one release per period, atomically publishing each one.
+
+    Every period of the list gets its own content-addressed release, so a site can
+    serve all available whole periods *and* the current, still unfinished one from
+    the same confirmed map.  ``freshness``/``verification`` describe the run, not
+    the period.  Returns ``(period_label, release_id)`` in the given order.
+    """
+
+    stamp = now or utc_now()
+    built: list[tuple[str, str]] = []
+    for period in periods:
+        builder = ReleaseBuilder(
+            policy=policy,
+            event_mapping=event_mapping,
+            period=period,
+            rates=rates,
+            liabilities=liabilities,
+        )
+        release = builder.build(
+            conn,
+            cutoff=stamp,
+            freshness=freshness,
+            verification=verification,
+            completeness=completeness,
+            source_labels=tuple(source_labels),
+            finance_data_present=finance_data_present,
+        )
+        repo.store_release(
+            conn,
+            release_id=release.release_id,
+            as_of=release.as_of.isoformat(),
+            schema_version=builder.schema_version,
+            sections=tuple(release.payload_json),
+            payload_text=release.combined_payload(),
+            built_at=stamp.isoformat(),
+            make_current=True,
+        )
+        if release_dir is not None:
+            # the allowlisted report archive travels inside the release, so the
+            # public site can render /reports/* without the private database
+            from ..web.build import release_files
+
+            publish_release(release_dir, release.release_id, release_files(release, conn))
+        built.append((period.label, release.release_id))
+    return built

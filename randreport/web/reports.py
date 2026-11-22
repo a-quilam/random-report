@@ -230,6 +230,111 @@ def version_payload(conn, period_label: str, version: int) -> dict[str, Any] | N
 
 
 # --------------------------------------------------------------------------- #
+# The allowlist store the public process reads instead of the private database
+# --------------------------------------------------------------------------- #
+
+def _public_snapshot(value: Any) -> Any:
+    """A snapshot payload stripped of the internal correction author.
+
+    ``actor`` is the private audit identity of whoever recorded a correction
+    (docs/REQUIREMENTS.md sections 3.7, 11): it may live in the private store,
+    never in a published file. The reason and the diff stay.
+    """
+
+    if isinstance(value, Mapping):
+        return {key: _public_snapshot(item) for key, item in value.items() if key != "actor"}
+    if isinstance(value, (list, tuple)):
+        return [_public_snapshot(item) for item in value]
+    return value
+
+
+def archive_entry(view: Mapping[str, Any]) -> dict[str, Any]:
+    """One period of :func:`public_view` as a plain, serialisable allowlist record.
+
+    The administrator identity of a correction is dropped here: only *what*
+    changed and *why* is public, while the author and date stay in the internal
+    audit (docs/REQUIREMENTS.md sections 3.7, 11). The drop is applied inside the
+    embedded snapshots as well, so the published archive cannot carry an actor.
+    """
+
+    return {
+        "period": str(view.get("period", "")),
+        "versions": [dict(row) for row in view.get("versions", ())],
+        "latest": _public_snapshot(view.get("latest")),
+        "original": _public_snapshot(view.get("original")),
+        "changed": bool(view.get("changed")),
+        "corrections": [
+            {
+                "version": int(c.version),
+                "at": str(c.at),
+                "reason": str(c.reason),
+                "changes": dict(c.changes),
+            }
+            for c in view.get("corrections", ())
+        ],
+    }
+
+
+def public_archive(conn, *, period_labels: Sequence[str] | None = None) -> dict[str, Any]:
+    """Build the whole public report archive from the private store.
+
+    This is the publication step that lets the public process run without any
+    access to the private database: the nightly (or on-demand) builder reads the
+    report snapshots here, leak-checks them, and writes the result into the
+    release store, from which the site renders. Every entry passes
+    :func:`~randreport.projection.privacy.assert_no_leaks` before it is returned.
+    """
+
+    from ..projection.privacy import assert_no_leaks
+
+    labels = tuple(period_labels) if period_labels is not None else repo.report_period_labels(conn)
+    archive: dict[str, Any] = {}
+    for label in labels:
+        view = public_view(conn, label)
+        if not view.get("versions"):
+            continue
+        archive[label] = archive_entry(view)
+    assert_no_leaks(archive)
+    return archive
+
+
+def view_from_entry(entry: Mapping[str, Any]) -> dict[str, Any]:
+    """Rebuild a :func:`public_view`-shaped dict (with :class:`Correction`s)."""
+
+    return {
+        "period": str(entry.get("period", "")),
+        "versions": tuple(dict(row) for row in entry.get("versions", ())),
+        "latest": entry.get("latest"),
+        "original": entry.get("original"),
+        "changed": bool(entry.get("changed")),
+        "corrections": tuple(
+            Correction(
+                version=int(c.get("version", 0)),
+                at=str(c.get("at", "")),
+                actor=None,  # a correction's author is never public
+                reason=str(c.get("reason", "")),
+                changes=dict(c.get("changes", {})),
+            )
+            for c in entry.get("corrections", ())
+        ),
+    }
+
+
+def version_payload_from_entry(entry: Mapping[str, Any] | None, version: int) -> dict[str, Any] | None:
+    """The archived payload of one version of a period, from the allowlist store."""
+
+    if entry is None:
+        return None
+    view = view_from_entry(entry)
+    for row in view["versions"]:
+        if int(row["version"]) == int(version):
+            if int(version) == int(view["versions"][-1]["version"]):
+                return view["latest"]
+            return view["original"] if int(version) == int(view["versions"][0]["version"]) else None
+    return None
+
+
+# --------------------------------------------------------------------------- #
 # Report text generation (must not invent facts)
 # --------------------------------------------------------------------------- #
 

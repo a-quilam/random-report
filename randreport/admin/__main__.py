@@ -46,9 +46,17 @@ def _open_db(path: str) -> Iterator[Any]:
 def cmd_serve(args: argparse.Namespace) -> int:
     from wsgiref.simple_server import make_server
 
+    from ..bindguard import BindRefused, assert_bind_allowed
+
     desk_app = build_desk_from_env(db_path=args.db, release_dir=args.release_dir)
     host = str(args.host or os.environ.get("RANREPORT_ADMIN_HOST", "127.0.0.1"))
     port = int(str(args.port or os.environ.get("RANREPORT_ADMIN_PORT", "8098")))
+    try:
+        assert_bind_allowed(host, allow_external=bool(getattr(args, "allow_external_bind", False)))
+    except BindRefused as exc:
+        desk_app.close()
+        print(f"refused: {exc}", file=sys.stderr)
+        return 2
     try:
         with make_server(host, port, desk_app) as httpd:
             print(f"editorial desk on http://{host}:{port}/admin/ (loopback is the default)", flush=True)
@@ -150,6 +158,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     serve.add_argument("--release-dir", default=None)
     serve.add_argument("--host", default=None)
     serve.add_argument("--port", default=None)
+    serve.add_argument(
+        "--allow-external-bind",
+        action="store_true",
+        help="permit a non-loopback bind (also needs RANREPORT_ALLOW_EXTERNAL_BIND=1)",
+    )
     serve.set_defaults(func=cmd_serve)
 
     bootstrap = sub.add_parser("bootstrap", help="seed the first member from the agreed Telegram id")

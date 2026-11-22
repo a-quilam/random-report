@@ -466,10 +466,101 @@ _MIGRATION_3 = (
     """,
 )
 
+# Migration 4: the source revision of an occurrence is an opaque token, not a
+# number. ``version`` arrives from Teamup as a hex string; an INTEGER column has
+# NUMERIC affinity and would silently rewrite a numeric-looking token (``0007``
+# becomes ``7``, a 20-digit token becomes a float), so the column is rebuilt as
+# TEXT and the existing tokens are kept as their text form.
+_MIGRATION_4: tuple[str, ...] = (
+    "DROP INDEX IF EXISTS idx_calendar_occurrences_start",
+    "ALTER TABLE calendar_occurrences RENAME TO calendar_occurrences_integer_revision",
+    """
+    CREATE TABLE calendar_occurrences (
+        calendar_id     TEXT NOT NULL,
+        occurrence_id   TEXT NOT NULL,
+        series_id       TEXT,
+        start_utc       TEXT NOT NULL,
+        end_utc         TEXT,
+        all_day         INTEGER NOT NULL DEFAULT 0,
+        subcalendar_ids TEXT NOT NULL DEFAULT '[]',
+        title           TEXT,
+        raw_type        TEXT,
+        revision        TEXT NOT NULL DEFAULT '',
+        deleted         INTEGER NOT NULL DEFAULT 0,
+        source_present  INTEGER NOT NULL DEFAULT 1,
+        local_archive   INTEGER NOT NULL DEFAULT 0,
+        content_hash    TEXT NOT NULL,
+        ingested_at     TEXT NOT NULL,
+        PRIMARY KEY (calendar_id, occurrence_id)
+    )
+    """,
+    """
+    INSERT INTO calendar_occurrences (
+        calendar_id, occurrence_id, series_id, start_utc, end_utc, all_day,
+        subcalendar_ids, title, raw_type, revision, deleted, source_present,
+        local_archive, content_hash, ingested_at
+    )
+    SELECT
+        calendar_id, occurrence_id, series_id, start_utc, end_utc, all_day,
+        subcalendar_ids, title, raw_type, CAST(revision AS TEXT), deleted,
+        source_present, local_archive, content_hash, ingested_at
+      FROM calendar_occurrences_integer_revision
+    """,
+    "DROP TABLE calendar_occurrences_integer_revision",
+    "CREATE INDEX idx_calendar_occurrences_start ON calendar_occurrences(start_utc)",
+)
+
+# --- migration 5: the passive webhook inbox ------------------------------- #
+#
+# ``docs/REQUIREMENTS.md`` section 8 allows a webhook as an *event intake*: the
+# process writes each incoming ``channel_post``/``edited_channel_post`` durably
+# into a private inbox and does all processing in the 03:00 cycle.  The inbox is
+# the reason a single missed delivery never loses a post silently: what was
+# received is on disk with the Telegram ``update_id`` as an idempotency key, and
+# what was *not* received stays visible as a gap rather than being reported as
+# "no news".
+_MIGRATION_5 = (
+    """
+    CREATE TABLE telegram_inbox (
+        update_id      TEXT PRIMARY KEY,          -- Telegram update_id: the dedup key
+        kind           TEXT NOT NULL,             -- channel_post|edited_channel_post
+        channel_id     TEXT NOT NULL,
+        message_id     TEXT NOT NULL,
+        posted_at      TEXT NOT NULL,
+        edited_at      TEXT,
+        text           TEXT NOT NULL,
+        media_group_id TEXT,
+        content_hash   TEXT NOT NULL,
+        revision       INTEGER NOT NULL DEFAULT 1,
+        received_at    TEXT NOT NULL,
+        committed_at   TEXT
+    )
+    """,
+    "CREATE INDEX idx_telegram_inbox_pending ON telegram_inbox(committed_at, received_at)",
+    # one live row per (channel, message): an edit replaces the pending revision
+    # instead of queueing a second copy of the same post
+    "CREATE INDEX idx_telegram_inbox_message ON telegram_inbox(channel_id, message_id)",
+    """
+    CREATE TABLE news_imports (
+        import_id    TEXT PRIMARY KEY,
+        channel_id   TEXT NOT NULL,
+        source_label TEXT NOT NULL,
+        received     INTEGER NOT NULL DEFAULT 0,
+        imported     INTEGER NOT NULL DEFAULT 0,
+        unchanged    INTEGER NOT NULL DEFAULT 0,
+        rejected     INTEGER NOT NULL DEFAULT 0,
+        detail       TEXT,
+        created_at   TEXT NOT NULL
+    )
+    """,
+)
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(1, "initial public-contract schema", _INITIAL),
     Migration(2, "llm cache, budget ledger and deferred jobs", _MIGRATION_2),
     Migration(3, "admin sessions, news revisions, drafts and annotations", _MIGRATION_3),
+    Migration(4, "an occurrence revision is an opaque text token", _MIGRATION_4),
+    Migration(5, "passive Telegram webhook inbox for public channel posts", _MIGRATION_5),
 )
 
 # Tables required by docs/REQUIREMENTS.md section 10.

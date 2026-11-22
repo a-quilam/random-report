@@ -22,6 +22,22 @@ from ..news.models import (
     build_news_item,
     parse_extraction,
 )
+from ..news.provider import (
+    DEFAULT_API_PATH,
+    DEFAULT_MAX_CALLS_PER_DAY,
+    DEFAULT_MAX_TOKENS_PER_DAY,
+    PROVIDER_NONE,
+    ChatCompletionsProvider,
+    LlmConfig,
+    LlmConfigError,
+    LlmProtocolError,
+    LlmProviderError,
+    LlmRateLimited,
+    LlmTransportError,
+    LlmUnauthorized,
+    config_from_env,
+    provider_from_config,
+)
 
 __all__ = [
     "PROMPT_VERSION",
@@ -37,4 +53,18 @@ __all__ = [
     "NewsItem",
     "build_news_item",
     "parse_extraction",
+    "DEFAULT_API_PATH",
+    "DEFAULT_MAX_CALLS_PER_DAY",
+    "DEFAULT_MAX_TOKENS_PER_DAY",
+    "PROVIDER_NONE",
+    "ChatCompletionsProvider",
+    "LlmConfig",
+    "LlmConfigError",
+    "LlmProtocolError",
+    "LlmProviderError",
+    "LlmRateLimited",
+    "LlmTransportError",
+    "LlmUnauthorized",
+    "config_from_env",
+    "provider_from_config",
 ]

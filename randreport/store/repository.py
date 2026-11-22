@@ -150,6 +150,20 @@ def mark_movements_deleted(conn: sqlite3.Connection, ids: Sequence[str], *, now:
         return cursor.rowcount
 
 
+def movement_months(conn: sqlite3.Connection) -> tuple[str, ...]:
+    """Distinct MSK months that hold live facts — cheaply, without loading them."""
+
+    rows = conn.execute(
+        """
+        SELECT DISTINCT substr(occurred_on, 1, 7) AS month
+          FROM finance_transactions
+         WHERE deleted = 0 AND is_planned = 0
+         ORDER BY month
+        """
+    ).fetchall()
+    return tuple(str(row["month"]) for row in rows)
+
+
 def load_movements(conn: sqlite3.Connection) -> tuple[Movement, ...]:
     rows = conn.execute("SELECT * FROM finance_transactions").fetchall()
     out: list[Movement] = []
@@ -273,6 +287,14 @@ def load_event_mapping(conn: sqlite3.Connection) -> tuple[str, dict[str, Any]] |
 # --------------------------------------------------------------------------- #
 
 def occurrence_content_hash(occurrence: Occurrence) -> str:
+    """The digest of everything the source said about an occurrence.
+
+    The revision token is part of it: a source edit changes the stored row and
+    invalidates the admin marks bound to the previous revision, even when the
+    normalised fields look identical. The token itself stays opaque - it is
+    hashed as delivered, never parsed.
+    """
+
     return _hash(
         occurrence.calendar_id,
         occurrence.occurrence_id,
@@ -282,8 +304,19 @@ def occurrence_content_hash(occurrence: Occurrence) -> str:
         ",".join(sorted(occurrence.subcalendar_ids)),
         occurrence.title,
         occurrence.series_id,
+        occurrence.revision,
         int(occurrence.deleted),
     )
+
+
+def _delivered_state_stored(row: Any, occurrence: Occurrence) -> bool:
+    """Whether the stored retention flags already match the delivered record.
+
+    Retention is our own bookkeeping, not source content: a row archived because
+    it had vanished must be marked present again when the source returns it.
+    """
+
+    return bool(row["local_archive"]) == occurrence.local_archive and bool(row["source_present"]) == occurrence.source_present
 
 
 def upsert_occurrences(
@@ -297,10 +330,11 @@ def upsert_occurrences(
     for occurrence in occurrences:
         digest = occurrence_content_hash(occurrence)
         row = conn.execute(
-            "SELECT content_hash, deleted FROM calendar_occurrences WHERE calendar_id = ? AND occurrence_id = ?",
+            "SELECT content_hash, deleted, source_present, local_archive FROM calendar_occurrences"
+            " WHERE calendar_id = ? AND occurrence_id = ?",
             (occurrence.calendar_id, occurrence.occurrence_id),
         ).fetchone()
-        if row is not None and row["content_hash"] == digest:
+        if row is not None and row["content_hash"] == digest and _delivered_state_stored(row, occurrence):
             unchanged += 1
             continue
         with transaction(conn):
@@ -322,6 +356,7 @@ def upsert_occurrences(
                     revision = excluded.revision,
                     deleted = excluded.deleted,
                     source_present = excluded.source_present,
+                    local_archive = excluded.local_archive,
                     content_hash = excluded.content_hash,
                     ingested_at = excluded.ingested_at
                 """,
@@ -436,7 +471,7 @@ def load_occurrences(conn: sqlite3.Connection) -> tuple[Occurrence, ...]:
                 title=row["title"],
                 all_day=bool(row["all_day"]),
                 raw_type=row["raw_type"],
-                revision=int(row["revision"]),
+                revision=str(row["revision"]),
                 deleted=bool(row["deleted"]),
                 source_present=bool(row["source_present"]),
                 local_archive=bool(row["local_archive"]),
@@ -893,6 +928,52 @@ def issues(conn: sqlite3.Connection, *, code: str | None = None) -> tuple[dict[s
     else:
         rows = conn.execute("SELECT * FROM issues WHERE code = ? ORDER BY created_at", (code,)).fetchall()
     return tuple(dict(row) for row in rows)
+
+
+#: The lifecycle issues the nightly cycle records about a source. They carry the
+#: logical date in their id, so a later healthy run is what closes them: the
+#: diagnostics catalog cannot match a per-date id, and without this a transient
+#: source failure would stay open forever.
+SOURCE_LIFECYCLE_CODES: tuple[str, ...] = ("source_failed", "source_partial")
+
+
+def resolve_source_issues(
+    conn: sqlite3.Connection,
+    *,
+    source: str,
+    codes: Sequence[str] = SOURCE_LIFECYCLE_CODES,
+    now: str | None = None,
+) -> tuple[str, ...]:
+    """Close a source's earlier lifecycle issues: the source is healthy again.
+
+    Resolving never hides history: the rows stay, the status and the audit trail
+    say who closed them and why. Returns the resolved issue ids.
+    """
+
+    stamp = now or _utcnow()
+    if not codes:
+        return ()
+    placeholders = ",".join("?" for _ in codes)
+    rows = conn.execute(
+        f"SELECT issue_id FROM issues WHERE status = 'open' AND entity_type = 'source' AND entity_key = ? AND code IN ({placeholders})",
+        (source, *codes),
+    ).fetchall()
+    resolved: list[str] = []
+    for row in rows:
+        issue_id = str(row["issue_id"])
+        with transaction(conn):
+            conn.execute("UPDATE issues SET status = 'resolved' WHERE issue_id = ?", (issue_id,))
+        audit(
+            conn,
+            action="issue.resolved",
+            actor="nightly",
+            entity_type="issue",
+            entity_key=issue_id,
+            detail={"reason": "источник снова читается успешно"},
+            now=stamp,
+        )
+        resolved.append(issue_id)
+    return tuple(resolved)
 
 
 def audit(

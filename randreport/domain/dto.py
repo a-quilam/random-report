@@ -223,6 +223,20 @@ class EventTypeAggregateDTO(StrictDTO):
 
 
 @dataclass(frozen=True)
+class PublicMeetingDTO(StrictDTO):
+    """A meeting of the allowed closed contour: its Moscow start day and a constant label.
+
+    There is deliberately no field for a raw title, id, time, url, description or
+    people — the source detail has nowhere to travel.
+    """
+
+    on: date
+    label: str
+
+    SCALARS: ClassVar[Mapping[str, str]] = {"on": "date"}
+
+
+@dataclass(frozen=True)
 class EventsDTO(StrictDTO):
     period: PeriodDTO
     as_of: date
@@ -232,21 +246,25 @@ class EventsDTO(StrictDTO):
     completeness: str
     source_labels: tuple[str, ...]
     public_events: tuple[PublicEventDTO, ...]
+    meetings: tuple[PublicMeetingDTO, ...]
     event_type_aggregates: Mapping[str, int]
     event_type_details: tuple[EventTypeAggregateDTO, ...]
     calendar_days: Mapping[str, int]
+    meeting_days: Mapping[str, int]
     calendar_granularity: str
     metrics: Mapping[str, Any]
 
     NESTED: ClassVar[Mapping[str, type]] = {"period": PeriodDTO}
     ELEMENTS: ClassVar[Mapping[str, type]] = {
         "public_events": PublicEventDTO,
+        "meetings": PublicMeetingDTO,
         "event_type_details": EventTypeAggregateDTO,
     }
     SCALARS: ClassVar[Mapping[str, str]] = {
         "as_of": "date",
         "event_type_aggregates": "mapping",
         "calendar_days": "mapping",
+        "meeting_days": "mapping",
         "metrics": "mapping",
         "source_labels": "str_tuple",
     }

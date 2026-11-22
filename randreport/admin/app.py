@@ -466,6 +466,9 @@ class AdminDesk:
                 private=private_raw in ("1", "true", "да", "yes", "on"),
                 actor=actor,
                 now=now.isoformat(),
+                excluded=_checked(form.get("excluded")),
+                meeting_contour=_checked(form.get("meeting_contour")),
+                rent=_checked(form.get("rent")),
             )
             return f"Сопоставление события записано новой версией {version}"
         if action == "mapping/rollback":
@@ -727,6 +730,12 @@ def _clear_pending_cookie(*, secure: bool) -> str:
     if secure:
         attrs += "; Secure"
     return f"{oidc.PENDING_COOKIE}=; {attrs}"
+
+
+def _checked(value: str | None) -> bool:
+    """HTML checkbox value: present-and-truthy means checked, absent means unchecked."""
+
+    return str(value or "").strip().lower() in {"1", "true", "да", "yes", "on"}
 
 
 def _parse_query(query_string: str) -> dict[str, str]:

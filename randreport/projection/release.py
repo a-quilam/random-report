@@ -18,6 +18,7 @@ from ..domain.dto import (
     MoneyDTO,
     PeriodDTO,
     PublicEventDTO,
+    PublicMeetingDTO,
 )
 from ..domain.events import (
     PUBLIC_TYPES,
@@ -26,6 +27,8 @@ from ..domain.events import (
     event_stats,
     public_calendar_days,
     public_events,
+    public_meeting_days,
+    public_meetings,
 )
 from ..domain.finance import BalanceSummary, FinanceTotals, category_public_key
 from ..domain.money import format_kopecks
@@ -104,6 +107,9 @@ def money_metrics(totals: FinanceTotals, balance: BalanceSummary | None = None) 
         "internal_transfer_kopecks": totals.internal_transfer_kopecks,
         "category_sum_kopecks": totals.category_sum_kopecks,
         "status_labels": ",".join(totals.labels),
+        # the contour flag is derived from the ledger, not guessed: an unconfirmed
+        # map is the only thing that raises the `contour_unconfirmed` label
+        "contour_confirmed": "contour_unconfirmed" not in totals.labels,
     }
     if balance is not None:
         metrics.update(
@@ -157,6 +163,8 @@ def events_metrics(stats: EventStats) -> dict[str, Any]:
         "total_events": stats.total,
         "public_events": stats.public_total,
         "closed_aggregate": stats.closed_total,
+        "closed_rent_aggregate": stats.closed_rent_total,
+        "meeting_aggregate": stats.meeting_total,
         "unknown_type_events": stats.by_type["unknown"],
         "local_archive_events": stats.local_archive_total,
         "public_share_percent": None
@@ -176,6 +184,7 @@ def build_events_payload(
     stats = stats or event_stats(selection)
     granularity = calendar_grid_granularity(ctx.period)
     days = public_calendar_days(selection) if granularity == "day" else {}
+    meeting_days = public_meeting_days(selection) if granularity == "day" else {}
     details = tuple(
         EventTypeAggregateDTO(type=event_type, count=count, public=event_type in PUBLIC_TYPES)
         for event_type, count in sorted(stats.by_type.items())
@@ -199,9 +208,13 @@ def build_events_payload(
             )
             for event in public_events(selection)
         ),
+        meetings=tuple(
+            PublicMeetingDTO(on=meeting.on, label=meeting.label) for meeting in public_meetings(selection)
+        ),
         event_type_aggregates=dict(stats.by_type),
         event_type_details=details,
         calendar_days=dict(days),
+        meeting_days=dict(meeting_days),
         calendar_granularity=granularity,
         metrics=events_metrics(stats),
     )

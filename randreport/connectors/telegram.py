@@ -87,7 +87,15 @@ class MTProtoHistorySource:
 
     It requires a real, separately authorised session (secret store) and is
     therefore reported as a blocked integration, not faked here.
+
+    ``is_placeholder`` is what the nightly cycle checks before it accepts the
+    environment's claim that a history pull covers the window: while this flag is
+    ``True`` the cycle refuses to report the news section as complete, because the
+    packaged source cannot prove anything.  A real implementation (an approved
+    session) sets it to ``False``.
     """
+
+    is_placeholder = True
 
     def __init__(self, *, allowed_channel_ids: Iterable[str]) -> None:
         self.allowed_channel_ids = frozenset(allowed_channel_ids)

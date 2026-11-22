@@ -26,6 +26,7 @@ from ..connectors.telegram import RawPost
 from ..store import repository as repo
 from ..store.db import transaction
 from .models import Classification, Extraction, ExtractionInvalid, NewsItem, build_news_item, parse_extraction
+from .provider import LlmRateLimited
 
 PROMPT_VERSION = "news-extract-1"
 MAX_POST_CHARS = 4000
@@ -64,6 +65,11 @@ class BatchOutcome:
     published: int = 0
     announcements: int = 0
     rejected: int = 0
+    #: how many posts the pass actually looked at; an empty batch is a *gap* to
+    #: be reported by the adapter, never evidence that nothing was published
+    posts: int = 0
+    #: the provider asked to be left alone (HTTP 429)
+    rate_limited: bool = False
 
 
 def build_prompt(posts: Sequence[RawPost], *, channel_username: str) -> str:
@@ -122,6 +128,20 @@ class NewsExtractor:
     @property
     def model(self) -> str:
         return getattr(self._provider, "model", "none") if self._provider else "none"
+
+    @property
+    def provider(self) -> LlmProvider | None:
+        """The configured provider, or ``None`` (the honest "no LLM" gap)."""
+
+        return self._provider
+
+    @property
+    def max_calls_per_date(self) -> int:
+        return self._max_calls
+
+    @property
+    def max_tokens_per_date(self) -> int:
+        return self._max_tokens
 
     # --- budget ------------------------------------------------------------ #
 
@@ -192,11 +212,14 @@ class NewsExtractor:
     def run(self, posts: Sequence[RawPost], *, logical_date: str) -> BatchOutcome:
         ordered = tuple(sorted(posts, key=lambda post: (post.posted_at, post.message_id)))
         if not ordered:
-            return BatchOutcome()
+            # An empty batch is *not* "the channel published nothing": it is the
+            # absence of evidence.  It is reported as a gap by the adapter, never
+            # as a complete news section (docs/REQUIREMENTS.md section 8).
+            return BatchOutcome(posts=0)
         if self._provider is None:
             # no provider configured is not an error for the rest of the site
             self._issue("llm_unavailable", severity="info", payload={"posts": len(ordered)})
-            return BatchOutcome(issues=("llm_unavailable",), degraded=True)
+            return BatchOutcome(issues=("llm_unavailable",), degraded=True, posts=len(ordered))
 
         cache_key = _digest(self._prompt_version, self.model, *(f"{p.message_id}:{p.text}" for p in ordered))
         cached = self._cache_get(cache_key)
@@ -206,16 +229,35 @@ class NewsExtractor:
 
         if cached is None:
             used_calls, used_tokens = self._budget(logical_date)
-            if used_calls >= self._max_calls or used_tokens >= self._max_tokens:
+            # the call budget is the cost gate, and 0 means "spend nothing" — the
+            # safe default.  The token budget is an optional extra cap: 0 leaves
+            # that dimension unlimited instead of silently blocking every call.
+            over_calls = used_calls >= self._max_calls
+            over_tokens = self._max_tokens > 0 and used_tokens >= self._max_tokens
+            if over_calls or over_tokens:
                 self._defer(logical_date, reason="budget_exceeded", posts=ordered)
-                self._issue("llm_budget_exceeded", payload={"calls": used_calls, "tokens": used_tokens})
-                return BatchOutcome(issues=("llm_budget_exceeded",), deferred=True, degraded=True)
+                self._issue(
+                    "llm_budget_exceeded",
+                    payload={"calls": used_calls, "tokens": used_tokens, "limit_calls": self._max_calls},
+                )
+                return BatchOutcome(
+                    issues=("llm_budget_exceeded",), deferred=True, degraded=True, posts=len(ordered)
+                )
 
             prompt = build_prompt(ordered, channel_username=self._channel_username)
-            response = self._call(prompt)
+            response, rate_limited = self._call(prompt)
+            if rate_limited:
+                # a 429 is a throttle, not a failure: defer the batch once and
+                # leave the provider alone instead of retrying into the limit
+                self._defer(logical_date, reason="rate_limited", posts=ordered)
+                self._issue("llm_rate_limited", payload={"posts": len(ordered)})
+                return BatchOutcome(
+                    issues=("llm_rate_limited",), deferred=True, degraded=True, calls=1,
+                    rate_limited=True, posts=len(ordered),
+                )
             if response is None:
                 self._issue("llm_error", severity="error", payload={"posts": len(ordered)})
-                return BatchOutcome(issues=("llm_error",), degraded=True)
+                return BatchOutcome(issues=("llm_error",), degraded=True, posts=len(ordered))
             calls = 1
             tokens = max(1, (len(prompt) + len(response)) // 4)
             self._add_budget(logical_date, calls=calls, tokens=tokens)
@@ -275,16 +317,28 @@ class NewsExtractor:
             announcements=announcements,
             rejected=rejected,
             degraded=False,
+            posts=len(ordered),
         )
 
-    def _call(self, prompt: str) -> str | None:
-        """Call the provider with bounded retries; return None when it keeps failing."""
+    def _call(self, prompt: str) -> tuple[str | None, bool]:
+        """Call the provider with bounded retries.
+
+        Returns ``(answer, rate_limited)``: ``answer`` is ``None`` when the call
+        kept failing, and ``rate_limited`` is ``True`` when the provider answered
+        HTTP 429 — a throttle is never retried in a loop (section 8 limits the
+        number of repeats *and* the cost).
+        """
 
         assert self._provider is not None
         for attempt in range(self._retries + 1):
             try:
-                return self._provider.complete(system=SYSTEM_PROMPT, prompt=prompt, timeout_s=self._timeout_s)
+                return (
+                    self._provider.complete(system=SYSTEM_PROMPT, prompt=prompt, timeout_s=self._timeout_s),
+                    False,
+                )
+            except LlmRateLimited:
+                return None, True
             except Exception:  # noqa: BLE001 - a provider failure must not break the run
                 if attempt < self._retries:
                     self._sleep(self._backoff_s * (attempt + 1))
-        return None
+        return None, False

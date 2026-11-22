@@ -49,7 +49,9 @@ EVENT_TYPE_LABELS = {
     "open": "открытые",
     "open_by_registration": "открытые по записи",
     "closed": "закрытые",
+    "closed_rent": "закрытые аренды",
     "internal_meeting": "внутренние собрания",
+    "meeting": "собрания",
     "preparation": "репетиции и подготовка",
     "unknown": "тип не указан",
 }
@@ -328,15 +330,25 @@ def coverage_bar(
         drift = available - sum((item[2] for item in drawn), Decimal(0))
         drawn[-1][2] = drawn[-1][2] + drift
         used = available
-    parts = [
-        f'<span class="seg seg-{index % 4}" style="width:{item[2]}%">'
-        f'<span class="seg-label">{e(item[0])} {item[1]} %</span></span>'
+    # The bar is SVG geometry: a segment width is an *attribute*, never an inline
+    # ``style`` declaration. The site's Content-Security-Policy is
+    # ``style-src 'self'``, which blocks a ``style`` attribute (a real browser
+    # reported ``style-src-attr :: inline`` and dropped every inline width, so the
+    # bar was laid out by its label text instead of its data). SVG attributes are
+    # not style, so the bar keeps its true proportions under that policy.
+    rects: list[str] = []
+    offset = Decimal(0)
+    for index, item in enumerate(drawn):
+        rects.append(f'<rect class="seg seg-{index % 4}" x="{offset}" y="0" width="{item[2]}" height="10"></rect>')
+        offset += Decimal(item[2])
+    legend: list[str] = [
+        f'<li><span class="swatch seg-{index % 4}" aria-hidden="true"></span>{e(item[0])} {item[1]} %</li>'
         for index, item in enumerate(drawn)
     ]
     if missing is not None and missing > 0:
-        parts.append(
-            f'<span class="seg seg-missing" style="width:{missing}%">'
-            f'<span class="seg-label">{e(missing_label)} {missing} %</span></span>'
+        rects.append(f'<rect class="seg seg-missing" x="{offset}" y="0" width="{missing}" height="10"></rect>')
+        legend.append(
+            f'<li><span class="swatch seg-missing" aria-hidden="true"></span>{e(missing_label)} {missing} %</li>'
         )
     label_text = f"Покрытие расходов поступлениями: {headline}. " + "; ".join(described)
     table_rows = [(label, "нет данных" if value is None else f"{value} %") for label, value in segments]
@@ -345,7 +357,9 @@ def coverage_bar(
     return (
         f'<figure class="coverage">'
         f'<figcaption>Покрытие расходов: <strong>{e(headline)}</strong></figcaption>'
-        f'<div class="bar" role="img" aria-label="{e(label_text)}">{"".join(parts)}</div>'
+        f'<svg class="coverage-bar" viewBox="0 0 100 10" preserveAspectRatio="none" '
+        f'role="img" aria-label="{e(label_text)}">{"".join(rects)}</svg>'
+        f'<ul class="coverage-legend">{"".join(legend)}</ul>'
         f"</figure>"
         + data_table(
             "Покрытие расходов по источникам (текстовая версия графика)",
@@ -604,6 +618,24 @@ def events_section(events: EventsDTO | None, *, period_label: str, historical: M
     elif events is not None:
         blocks.append(empty_state("За этот период публичных событий в календаре нет."))
 
+    if events is not None and events.meetings:
+        blocks.append('<h2>Собрания</h2>')
+        blocks.append(
+            data_table(
+                "Состоявшиеся собрания (дата и постоянная подпись)",
+                ("Дата", "Подпись"),
+                [(e(item.on.isoformat()), e(item.label)) for item in events.meetings],
+                numeric_from=9,
+            )
+        )
+        blocks.append(
+            note(
+                "Собрания разрешены к публикации только как московская дата начала и постоянная подпись «Собрание»: "
+                "исходное название, время, участники и ссылки не публикуются.",
+                kind="muted",
+            )
+        )
+
     if events is not None:
         blocks.append('<h2>Статистика по типам</h2>')
         rows = [
@@ -613,13 +645,14 @@ def events_section(events: EventsDTO | None, *, period_label: str, historical: M
         blocks.append(data_table("Состоявшиеся события по типам", ("Тип", "Состоялось", "Публикация"), rows, numeric_from=1))
         blocks.append(
             note(
-                "Закрытые, внутренние и подготовительные события входят только в общий счётчик: ни названий, ни дат, ни точек календарной сетки."
+                "Закрытые, внутренние и подготовительные события входят только в общий счётчик: ни названий, ни дат, "
+                "ни точек календарной сетки. Собрания — исключение по решению владельца: только дата начала и постоянная подпись."
             )
         )
-        if events.calendar_granularity == "day" and events.calendar_days:
-            blocks.append(calendar_grid(period_label, events.calendar_days))
+        if events.calendar_granularity == "day" and (events.calendar_days or events.meeting_days):
+            blocks.append(calendar_grid(period_label, events.calendar_days, meetings=dict(events.meeting_days)))
         elif events.calendar_granularity == "day":
-            blocks.append(empty_state("В календарной сетке этого месяца публичных событий нет."))
+            blocks.append(empty_state("В календарной сетке этого месяца публичных событий и собраний нет."))
 
     blocks.append('<h2>Историческое покрытие</h2>')
     view = historical.get("events")
@@ -636,9 +669,14 @@ def events_section(events: EventsDTO | None, *, period_label: str, historical: M
     return "".join(blocks)
 
 
-def calendar_grid(period_label: str, days: Mapping[str, int]) -> str:
-    """A month grid of *public* events only; closed dates leave no mark at all."""
+def calendar_grid(period_label: str, days: Mapping[str, int], *, meetings: Mapping[str, int] | None = None) -> str:
+    """A month grid of public events and meetings; other closed dates leave no mark.
 
+    Only public events and the owner-approved meetings (date plus the constant
+    label) are marked — an ordinary closed date still leaves no mark at all.
+    """
+
+    meeting_days = dict(meetings or {})
     start, _end = month_bounds(period_label)
     weeks = calendar.Calendar(firstweekday=0).monthdayscalendar(start.year, start.month)
     header = "".join(f'<th scope="col"><span aria-hidden="true">{name}</span><span class="sr-only">{full}</span></th>' for name, full in
@@ -652,19 +690,27 @@ def calendar_grid(period_label: str, days: Mapping[str, int]) -> str:
                 continue
             key = f"{start.year:04d}-{start.month:02d}-{day:02d}"
             count = days.get(key)
-            if count:
-                cells.append(
-                    f'<td class="day has-event"><span class="day-num">{day}</span>'
-                    f'<span class="day-mark" aria-hidden="true">•</span>'
-                    f'<span class="sr-only">публичных событий: {count}</span></td>'
-                )
-            else:
+            meeting_count = meeting_days.get(key)
+            if not count and not meeting_count:
                 cells.append(f'<td class="day"><span class="day-num">{day}</span></td>')
+                continue
+            marks = []
+            described = []
+            if count:
+                marks.append('<span class="day-mark" aria-hidden="true">•</span>')
+                described.append(f"публичных событий: {count}")
+            if meeting_count:
+                marks.append('<span class="day-mark day-mark-meeting" aria-hidden="true">◦</span>')
+                described.append(f"собраний: {meeting_count}")
+            cells.append(
+                f'<td class="day has-event"><span class="day-num">{day}</span>'
+                f'{"".join(marks)}<span class="sr-only">{e("; ".join(described))}</span></td>'
+            )
         body.append(f"<tr>{''.join(cells)}</tr>")
     return (
-        f'<figure class="calendar"><figcaption>Календарь публичных событий за {e(period_label)}</figcaption>'
+        f'<figure class="calendar"><figcaption>Календарь публичных событий и собраний за {e(period_label)}</figcaption>'
         f'<div class="table-wrap"><table class="grid"><thead><tr>{header}</tr></thead><tbody>{"".join(body)}</tbody></table></div>'
-        f'<p class="hint">Точками отмечены только публичные события; дни без отметки могут содержать закрытые события.</p>'
+        f'<p class="hint">Публичные события и собрания отмечены; дни без отметки могут содержать закрытые события, которые не раскрываются.</p>'
         f"</figure>"
     )
 
