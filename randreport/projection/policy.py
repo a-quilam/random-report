@@ -22,6 +22,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any, Mapping
 
+from ..domain.allocation import allocation_policy_from_payload
 from ..domain.events import (
     DEFAULT_MEETING_LABEL,
     DEFAULT_MEETING_MATCH,
@@ -65,6 +66,8 @@ def scope_policy_from_payload(version: str, payload: Mapping[str, Any]) -> Scope
         count_visibility_threshold_kopecks=int(payload.get("count_visibility_threshold_kopecks", 100_000)),
         sensitive_categories=frozenset(payload.get("sensitive_categories") or ()),
         unclassified_label=str(payload.get("unclassified_label", "требуют классификации")),
+        category_hints={str(k): str(v) for k, v in (payload.get("category_hints") or {}).items() if str(v).strip()},
+        allocation=allocation_policy_from_payload(version, payload.get("allocation") or {}),
         contour_confirmed=bool(payload.get("contour_confirmed", True)),
     )
 
@@ -109,7 +112,23 @@ def policy_from_store(conn: sqlite3.Connection) -> ScopePolicy:
         # no mapping recorded yet: the contour is unknown, money stays unknown
         return unmapped_policy()
     version, payload = loaded
-    return scope_policy_from_payload(version, payload)
+    return with_stored_exclusions(scope_policy_from_payload(version, payload), conn)
+
+
+def with_stored_exclusions(policy: ScopePolicy, conn: sqlite3.Connection) -> ScopePolicy:
+    """Fold the reversible per-operation exclusions into the loaded policy.
+
+    The exclusions are a desk decision kept in their own table (the source
+    transactions are never touched); reading them here keeps the report loader
+    the single place where the confirmed policy is assembled.
+    """
+
+    from dataclasses import replace as _replace
+
+    active = repo.active_report_exclusions(conn)
+    if not active:
+        return policy
+    return _replace(policy, allocation=policy.allocation.with_exclusions(active))
 
 
 def event_mapping_from_store(conn: sqlite3.Connection) -> EventTypeMapping:
@@ -181,7 +200,7 @@ def load_policy(conn: sqlite3.Connection, *, config_path: str | Path | None = No
         # the newest recorded version is what the editorial desk decided; loading
         # is read-only, so a desk edit is never overwritten by the nightly cycle
         version, payload = loaded
-        return scope_policy_from_payload(version, payload)
+        return with_stored_exclusions(scope_policy_from_payload(version, payload), conn)
     if config_path:
         return policy_from_payload_file(config_path)
     return unmapped_policy()
@@ -201,4 +220,5 @@ __all__ = [
     "read_mapping_file",
     "scope_policy_from_payload",
     "unmapped_policy",
+    "with_stored_exclusions",
 ]

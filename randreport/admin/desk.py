@@ -357,6 +357,213 @@ def edit_money(*_args: Any, **_kwargs: Any) -> None:
     )
 
 
+# --------------------------------------------------------------------------- #
+# allocation overrides (docs/ALLOCATION.md)
+# --------------------------------------------------------------------------- #
+
+def allocation_view(conn: sqlite3.Connection) -> dict[str, Any]:
+    """The confirmed allocation policy plus the active reversible exclusions."""
+
+    from ..domain.allocation import allocation_policy_from_payload
+
+    manifest = _manifest(conn)
+    raw = dict(manifest.get("allocation") or {})
+    policy = allocation_policy_from_payload(str(raw.get("version") or "allocation"), raw)
+    return {
+        "version": policy.version,
+        "confirmed": policy.confirmed,
+        "excluded_category_ids": sorted(policy.excluded_category_ids),
+        "share_rules": {
+            str(key): {"numerator": rule.numerator, "denominator": rule.denominator, "rounding": rule.rounding}
+            for key, rule in policy.share_rules.items()
+        },
+        "rent": None
+        if policy.rent_rule is None
+        else {"monthly_kopecks": policy.rent_rule.monthly_kopecks, "from_month": policy.rent_rule.from_month},
+        "rent_category_ids": sorted(policy.rent_category_ids),
+        "supercategories": {str(key): sorted(value) for key, value in policy.supercategories.items()},
+        "corrections": [
+            {"period": item.period, "amount_kopecks": item.amount_kopecks, "category_id": item.category_id, "reason": item.reason}
+            for item in policy.corrections
+        ],
+        "is_empty": policy.is_empty,
+        "exclusions": [
+            {
+                "transaction_id": str(row["transaction_id"]),
+                "excluded_at": str(row["excluded_at"]),
+                "actor": row["actor"],
+                "reason": row["reason"],
+            }
+            for row in repo.report_exclusions(conn, include_restored=False)
+        ],
+    }
+
+
+def set_allocation_policy(
+    conn: sqlite3.Connection,
+    *,
+    payload: Mapping[str, Any],
+    actor: str,
+    now: str | None = None,
+) -> str:
+    """Record the owner's allocation rules as a *new* mapping version.
+
+    The payload is validated through the same parser the report loader uses, so a
+    typo (an unknown rounding, a float, a malformed month) is refused here rather
+    than silently widening what the report shows.  The per-operation exclusions
+    are not part of this document: they live in their own reversible table.
+    """
+
+    from ..domain.allocation import allocation_policy_from_payload
+
+    raw = {str(key): value for key, value in dict(payload or {}).items() if key != "excluded_transaction_ids"}
+    allocation_policy_from_payload(str(raw.get("version") or "allocation"), raw)
+    loaded = repo.load_category_mapping(conn)
+    merged = {} if loaded is None else dict(loaded[1])
+    if raw:
+        merged["allocation"] = raw
+    else:
+        merged.pop("allocation", None)
+    version = _next_version(conn, "category_mapping_versions", "policy")
+    repo.record_category_mapping(conn, version=version, payload=merged, now=now)
+    repo.audit(
+        conn,
+        action="mapping.allocation.updated",
+        actor=actor,
+        entity_type="allocation_policy",
+        entity_key=version,
+        detail={"keys": sorted(raw)},
+        now=now,
+    )
+    checks.invalidate_for_mapping(conn, kind="category", version=version, actor=actor, now=now)
+    return version
+
+
+def set_category_hint(
+    conn: sqlite3.Connection,
+    *,
+    category_id: str,
+    hint: str | None,
+    actor: str,
+    now: str | None = None,
+) -> str:
+    """Record (or clear) the approved public hint of a category, as a new version."""
+
+    text = "" if hint is None else str(hint).strip()
+    if len(text) > 200:
+        raise DeskError("подсказка длиннее 200 символов")
+    loaded = repo.load_category_mapping(conn)
+    merged = {} if loaded is None else dict(loaded[1])
+    hints = {str(key): str(value) for key, value in (merged.get("category_hints") or {}).items()}
+    if text:
+        hints[str(category_id)] = text
+    else:
+        hints.pop(str(category_id), None)
+    merged["category_hints"] = hints
+    version = _next_version(conn, "category_mapping_versions", "policy")
+    repo.record_category_mapping(conn, version=version, payload=merged, now=now)
+    repo.audit(
+        conn,
+        action="mapping.category.hint",
+        actor=actor,
+        entity_type="finance_category",
+        entity_key=str(category_id),
+        detail={"version": version, "set": bool(text)},
+        now=now,
+    )
+    checks.invalidate_for_mapping(conn, kind="category", version=version, actor=actor, now=now)
+    return version
+
+
+def is_operation_excluded(conn: sqlite3.Connection, transaction_id: str) -> bool:
+    """Whether this operation is currently excluded from the report."""
+
+    return str(transaction_id) in set(repo.active_report_exclusions(conn))
+
+
+def _confirmed_category_class(conn: sqlite3.Connection, category_id: str | None) -> str | None:
+    """The confirmed economic class of a category, or ``None`` when unconfirmed."""
+
+    if not category_id:
+        return None
+    classes = _manifest(conn).get("category_classes") or {}
+    value = classes.get(str(category_id))
+    return None if value is None else str(value)
+
+
+def exclude_operation(
+    conn: sqlite3.Connection,
+    *,
+    transaction_id: str,
+    reason: str,
+    actor: str,
+    now: str | None = None,
+) -> dict[str, Any]:
+    """Reversibly exclude one operation from the report (a partly-owned category).
+
+    Protection: an operation whose *ownership* is not confirmed — an unknown or
+    unconfirmed category — is refused, because excluding it would hide money
+    nobody has classified.  The source transaction is never modified.
+    """
+
+    card = money_card(conn, transaction_id)
+    if card is None:
+        raise DeskError("операция не найдена в публичном контуре")
+    category = card.get("category_key")
+    if _confirmed_category_class(conn, category) is None:
+        raise DeskError(
+            "принадлежность операции неизвестна: категория не подтверждена, исключить её из отчёта нельзя"
+        )
+    if str(category) in set(allocation_view(conn)["excluded_category_ids"]):
+        raise DeskError("категория уже исключена целиком: отдельная операция ничего не меняет")
+    stamp = now or _utcnow()
+    result = repo.exclude_operation_from_report(
+        conn, transaction_id=transaction_id, actor=actor, reason=str(reason or ""), now=stamp
+    )
+    repo.audit(
+        conn,
+        action="report.operation.excluded",
+        actor=actor,
+        entity_type="finance_transaction",
+        entity_key=transaction_id,
+        detail={"reactivated": bool(result.get("reactivated"))},
+        now=stamp,
+    )
+    checks.invalidate(
+        conn, entity_type="period", cause="report_exclusion", detail={"operation": "excluded"}, now=stamp
+    )
+    return result
+
+
+def restore_operation(
+    conn: sqlite3.Connection,
+    *,
+    transaction_id: str,
+    actor: str,
+    now: str | None = None,
+) -> dict[str, Any]:
+    """Undo an exclusion: the operation comes back, the record and audit stay."""
+
+    stamp = now or _utcnow()
+    try:
+        result = repo.restore_operation_to_report(conn, transaction_id=transaction_id, actor=actor, now=stamp)
+    except ValueError as exc:
+        raise DeskError(str(exc)) from exc
+    repo.audit(
+        conn,
+        action="report.operation.restored",
+        actor=actor,
+        entity_type="finance_transaction",
+        entity_key=transaction_id,
+        detail={"restored": bool(result.get("restored"))},
+        now=stamp,
+    )
+    checks.invalidate(
+        conn, entity_type="period", cause="report_exclusion", detail={"operation": "restored"}, now=stamp
+    )
+    return result
+
+
 def _manifest(conn: sqlite3.Connection) -> Mapping[str, Any]:
     loaded = repo.load_category_mapping(conn)
     return {} if loaded is None else dict(loaded[1])

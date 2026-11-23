@@ -196,7 +196,11 @@ class AdminDesk:
             card = desk.money_card(conn, transaction_id)
             if card is None:
                 return self._error(404, "Операция не найдена в публичном контуре.")
-            body = render.money_card_panel(card, csrf=session.csrf_token)
+            body = render.money_card_panel(
+                card,
+                csrf=session.csrf_token,
+                excluded=desk.is_operation_excluded(conn, transaction_id),
+            )
             title = "Операция"
         elif tail.startswith("/source/"):
             source = tail[len("/source/"):]
@@ -241,6 +245,7 @@ class AdminDesk:
                 desk.audit_trail(conn),
                 desk.invalidations(conn),
                 csrf=session.csrf_token,
+                allocation=desk.allocation_view(conn),
             )
             title = "Настройки"
         elif tail == "/audit":
@@ -447,6 +452,40 @@ class AdminDesk:
             return "Аннотация сохранена"
         if action == "money/edit":
             desk.edit_money(transaction_id=str(form.get("transaction_id") or ""), amount=str(form.get("amount") or ""))
+        if action == "report/exclude":
+            result = desk.exclude_operation(
+                conn,
+                transaction_id=str(form.get("transaction_id") or ""),
+                reason=str(form.get("reason") or ""),
+                actor=actor,
+                now=now.isoformat(),
+            )
+            note = " (повторно включено ограничение)" if result.get("reactivated") else ""
+            return "Операция исключена из отчёта обратимо" + note
+        if action == "report/restore":
+            desk.restore_operation(
+                conn, transaction_id=str(form.get("transaction_id") or ""), actor=actor, now=now.isoformat()
+            )
+            return "Операция возвращена в отчёт"
+        if action == "allocation/import":
+            raw = str(form.get("allocation_json") or "").strip()
+            try:
+                payload = json.loads(raw) if raw else {}
+            except ValueError as exc:
+                raise desk.DeskError("политика распределения должна быть корректным JSON") from exc
+            if not isinstance(payload, Mapping):
+                raise desk.DeskError("политика распределения должна быть объектом JSON")
+            version = desk.set_allocation_policy(conn, payload=payload, actor=actor, now=now.isoformat())
+            return f"Правила распределения записаны новой версией {version}"
+        if action == "category/hint":
+            version = desk.set_category_hint(
+                conn,
+                category_id=str(form.get("category_id") or ""),
+                hint=(str(form.get("hint")) if form.get("hint") else None),
+                actor=actor,
+                now=now.isoformat(),
+            )
+            return f"Подсказка категории записана новой версией {version}"
         if action == "mapping/category":
             version = desk.set_category_mapping(
                 conn,
@@ -574,7 +613,10 @@ class AdminDesk:
     def _action_return(self, action: str, form: Mapping[str, str]) -> str:
         if action.startswith("news"):
             return f"{ADMIN_ROOT}/news"
-        if action.startswith("mapping") or action.startswith("members") or action in ("news-source", "donor-alias"):
+        if action.startswith("report/"):
+            transaction_id = str(form.get("transaction_id") or "")
+            return f"{ADMIN_ROOT}/money/{transaction_id}" if transaction_id else f"{ADMIN_ROOT}/money"
+        if action.startswith("mapping") or action.startswith("members") or action.startswith("allocation") or action.startswith("category/") or action in ("news-source", "donor-alias"):
             return f"{ADMIN_ROOT}/settings"
         if action.startswith("publish"):
             label = str(form.get("period") or "")

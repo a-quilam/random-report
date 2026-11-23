@@ -1067,3 +1067,89 @@ def next_report_version(conn: sqlite3.Connection, period_label: str) -> int:
 def report_period_labels(conn: sqlite3.Connection) -> tuple[str, ...]:
     rows = conn.execute("SELECT DISTINCT period_label FROM report_snapshots ORDER BY period_label").fetchall()
     return tuple(row["period_label"] for row in rows)
+
+
+# --------------------------------------------------------------------------- #
+# Reversible per-operation report exclusions (docs/ALLOCATION.md section 4)
+# --------------------------------------------------------------------------- #
+
+def active_report_exclusions(conn: sqlite3.Connection) -> tuple[str, ...]:
+    """Ids of operations currently excluded from the report (restored ones are not)."""
+
+    rows = conn.execute(
+        "SELECT transaction_id FROM finance_report_exclusions WHERE restored_at IS NULL ORDER BY excluded_at, transaction_id"
+    ).fetchall()
+    return tuple(str(row["transaction_id"]) for row in rows)
+
+
+def report_exclusions(conn: sqlite3.Connection, *, include_restored: bool = False) -> tuple[dict[str, Any], ...]:
+    clause = "" if include_restored else "WHERE restored_at IS NULL"
+    rows = conn.execute(
+        f"SELECT * FROM finance_report_exclusions {clause} ORDER BY excluded_at, transaction_id"
+    ).fetchall()
+    return tuple(dict(row) for row in rows)
+
+
+def exclude_operation_from_report(
+    conn: sqlite3.Connection,
+    *,
+    transaction_id: str,
+    actor: str | None,
+    reason: str = "",
+    now: str | None = None,
+) -> dict[str, Any]:
+    """Exclude one operation from the report, reversibly.
+
+    The row is created or re-activated in place; the source transaction is never
+    modified, so the immutable original survives (section 6.1 forbids a local
+    money correction — this only changes what the *report* counts).
+    """
+
+    stamp = now or _utcnow()
+    existing = conn.execute(
+        "SELECT restored_at FROM finance_report_exclusions WHERE transaction_id = ?", (transaction_id,)
+    ).fetchone()
+    with transaction(conn):
+        conn.execute(
+            """
+            INSERT INTO finance_report_exclusions (transaction_id, excluded_at, actor, reason, restored_at, restored_by)
+            VALUES (?, ?, ?, ?, NULL, NULL)
+            ON CONFLICT (transaction_id) DO UPDATE SET
+                excluded_at = excluded.excluded_at,
+                actor = excluded.actor,
+                reason = excluded.reason,
+                restored_at = NULL,
+                restored_by = NULL
+            """,
+            (str(transaction_id), stamp, actor, str(reason or "")),
+        )
+    return {
+        "transaction_id": str(transaction_id),
+        "excluded_at": stamp,
+        "reactivated": existing is not None and existing["restored_at"] is not None,
+    }
+
+
+def restore_operation_to_report(
+    conn: sqlite3.Connection,
+    *,
+    transaction_id: str,
+    actor: str | None,
+    now: str | None = None,
+) -> dict[str, Any]:
+    """Undo an exclusion: the operation returns to the report, the row stays."""
+
+    stamp = now or _utcnow()
+    row = conn.execute(
+        "SELECT restored_at FROM finance_report_exclusions WHERE transaction_id = ?", (transaction_id,)
+    ).fetchone()
+    if row is None:
+        raise ValueError("операция не исключалась из отчёта")
+    if row["restored_at"] is not None:
+        return {"transaction_id": str(transaction_id), "restored": False, "already": True}
+    with transaction(conn):
+        conn.execute(
+            "UPDATE finance_report_exclusions SET restored_at = ?, restored_by = ? WHERE transaction_id = ?",
+            (stamp, actor, str(transaction_id)),
+        )
+    return {"transaction_id": str(transaction_id), "restored": True, "restored_at": stamp}

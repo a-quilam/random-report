@@ -175,8 +175,93 @@ class CategoryDTO(StrictDTO):
     amount_rub: str
     share_percent: str | None
     operations_count: int | None
+    #: An approved optional hint for this category; the UI must reach it by touch
+    #: and keyboard (docs/ALLOCATION.md section 5).  ``None`` means the owner
+    #: approved no hint — the UI must not invent one.
+    hint: str | None = None
 
     SCALARS: ClassVar[Mapping[str, str]] = {"amount_kopecks": "int"}
+
+
+@dataclass(frozen=True)
+class AllocationAdjustmentDTO(StrictDTO):
+    """One allocation override, described in public-safe terms."""
+
+    kind: str
+    category_key: str
+    period: str | None
+    before_kopecks: int
+    after_kopecks: int
+    note: str
+
+    SCALARS: ClassVar[Mapping[str, str]] = {"before_kopecks": "int", "after_kopecks": "int"}
+
+
+@dataclass(frozen=True)
+class RentMonthDTO(StrictDTO):
+    """The agreed rent and the actual bank payment of one month, side by side."""
+
+    month: str
+    computed_kopecks: int
+    bank_kopecks: int
+    applied: bool
+    note: str
+
+    SCALARS: ClassVar[Mapping[str, str]] = {
+        "computed_kopecks": "int",
+        "bank_kopecks": "int",
+        "applied": "bool",
+    }
+
+
+@dataclass(frozen=True)
+class AllocationDTO(StrictDTO):
+    """The owner's allocation overrides as the public contract sees them.
+
+    Every field is a count, a kopeck total or a label — there is no field for a
+    raw category id, a source account or an operation, so the private detail has
+    nowhere to travel.
+    """
+
+    version: str = "allocation"
+    confirmed: bool = True
+    applied: bool = False
+    excluded_categories: int = 0
+    excluded_operations: int = 0
+    shared_expenses_before_kopecks: int = 0
+    shared_expenses_after_kopecks: int = 0
+    computed_rent_kopecks: int = 0
+    bank_rent_kopecks: int = 0
+    rent_applied: bool = False
+    rent_differs: bool = False
+    corrections_positive_kopecks: int = 0
+    corrections_negative_kopecks: int = 0
+    corrections_unclassified: bool = False
+    adjustments: tuple["AllocationAdjustmentDTO", ...] = ()
+    rent_months: tuple["RentMonthDTO", ...] = ()
+    labels: tuple[str, ...] = ()
+
+    NESTED: ClassVar[Mapping[str, type]] = {}
+    ELEMENTS: ClassVar[Mapping[str, type]] = {
+        "adjustments": AllocationAdjustmentDTO,
+        "rent_months": RentMonthDTO,
+    }
+    SCALARS: ClassVar[Mapping[str, str]] = {
+        "confirmed": "bool",
+        "applied": "bool",
+        "excluded_categories": "int",
+        "excluded_operations": "int",
+        "shared_expenses_before_kopecks": "int",
+        "shared_expenses_after_kopecks": "int",
+        "computed_rent_kopecks": "int",
+        "bank_rent_kopecks": "int",
+        "rent_applied": "bool",
+        "rent_differs": "bool",
+        "corrections_positive_kopecks": "int",
+        "corrections_negative_kopecks": "int",
+        "corrections_unclassified": "bool",
+        "labels": "str_tuple",
+    }
 
 
 @dataclass(frozen=True)
@@ -191,8 +276,9 @@ class MoneyDTO(StrictDTO):
     unit: str
     metrics: Mapping[str, Any]
     categories: tuple[CategoryDTO, ...]
+    allocation: AllocationDTO = field(default_factory=AllocationDTO)
 
-    NESTED: ClassVar[Mapping[str, type]] = {"period": PeriodDTO}
+    NESTED: ClassVar[Mapping[str, type]] = {"period": PeriodDTO, "allocation": AllocationDTO}
     ELEMENTS: ClassVar[Mapping[str, type]] = {"categories": CategoryDTO}
     SCALARS: ClassVar[Mapping[str, str]] = {
         "as_of": "date",

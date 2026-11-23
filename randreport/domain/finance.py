@@ -18,6 +18,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Iterable, Mapping, Sequence
 
+from .allocation import AllocationPolicy
 from .flows import EconomicClass, AccountScope, direction_for
 from .money import apply_rate, share_percent, sum_kopecks
 from .timeframes import Period, msk_day
@@ -111,6 +112,15 @@ class ScopePolicy:
     count_visibility_threshold_kopecks: int = 100_000
     sensitive_categories: frozenset[str] = frozenset()
     unclassified_label: str = UNCLASSIFIED_LABEL
+    #: Optional approved hint per category: a plain sentence the desk publishes
+    #: next to the confirmed public name.  It is display metadata only (no sums,
+    #: no source text) and the public UI must reach it by touch *and* keyboard —
+    #: see docs/ALLOCATION.md section 5.
+    category_hints: Mapping[str, str] = field(default_factory=dict)
+    #: The owner's versioned allocation overrides (docs/ALLOCATION.md).  An
+    #: empty, inert policy changes nothing; a confirmed one is applied by
+    #: :func:`randreport.domain.allocation.apply_allocation` before the totals.
+    allocation: AllocationPolicy = field(default_factory=AllocationPolicy)
     #: ``False`` when no confirmed map exists for the public contour at all (no
     #: recorded mapping, no private configuration).  The contour is then
     #: *unknown*: every indicator stays ``None`` — a missing map is not a zero
@@ -135,6 +145,14 @@ class ScopePolicy:
         if category_id is None:
             return self.unclassified_label
         return self.category_labels.get(category_id, self.unclassified_label)
+
+    def hint_for(self, category_id: str | None) -> str | None:
+        """The approved optional hint for a category, or ``None`` (never invented)."""
+
+        if category_id is None:
+            return None
+        text = self.category_hints.get(category_id)
+        return text or None
 
     def reveals_operations_count(self, category_id: str | None, amount_kopecks: int) -> bool:
         if category_id is not None and category_id in self.sensitive_categories:
@@ -428,6 +446,7 @@ class CategoryTotal:
     operations_count: int | None
     raw_operations_count: int
     share_percent: Decimal | None = None
+    hint: str | None = None
 
 
 def category_public_key(category_id: str | None) -> str:
@@ -510,6 +529,7 @@ def _category_rows(classifications: Sequence[Classification], policy: ScopePolic
                 operations_count=len(rows) if reveal else None,
                 raw_operations_count=len(rows),
                 share_percent=share_percent(amount, bucket_totals[economic_class.value]),
+                hint=policy.hint_for(category_id),
             )
         )
     return tuple(totals)

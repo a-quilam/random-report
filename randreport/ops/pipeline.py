@@ -26,6 +26,7 @@ from ..domain.dto import (
     NewsItemDTO,
     StrictDTO,
 )
+from ..domain.allocation import apply_allocation
 from ..domain.events import EventTypeMapping, event_stats, select_completed
 from ..domain.finance import (
     Liability,
@@ -128,6 +129,9 @@ class ReleaseBuilder:
 
         movements = repo.load_movements(conn)
         ledger = build_ledger(movements, self.policy, self.period, source_data_present=finance_data_present)
+        # the owner's confirmed overrides are folded in before the totals, so
+        # every aggregate, CSV row and HTML row is derived from one ledger
+        ledger, allocation_report = apply_allocation(ledger, self.policy.allocation, policy=self.policy)
         totals = compute_totals(ledger, as_of=cutoff_day)
         balance = consolidated_balance(
             repo.load_balances(conn),
@@ -164,7 +168,7 @@ class ReleaseBuilder:
             source_labels=tuple(source_labels),
         )
 
-        money = build_money_payload(ctx, totals, balance=balance)
+        money = build_money_payload(ctx, totals, balance=balance, allocation=allocation_report)
         events = build_events_payload(ctx, selection, stats=stats)
         community = self._community(ctx, conn)
         chronicle = self._chronicle(ctx, conn)

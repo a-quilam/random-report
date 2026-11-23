@@ -571,6 +571,27 @@ _MIGRATION_6 = (
     """,
 )
 
+# --- migration 7: reversible per-operation report exclusions ---------------- #
+# A category that only *partly* belongs to the basement cannot be excluded as a
+# whole; the editorial desk excludes a single operation instead.  The decision
+# lives here, reversibly: the row is kept and merely marked restored, the source
+# transaction in ``finance_transactions`` is never touched, and every change is
+# audited.  A report then drops exactly this operation and keeps its immutable
+# original (docs/ALLOCATION.md section 4).
+_MIGRATION_7 = (
+    """
+    CREATE TABLE finance_report_exclusions (
+        transaction_id TEXT PRIMARY KEY,
+        excluded_at    TEXT NOT NULL,
+        actor          TEXT,
+        reason         TEXT NOT NULL DEFAULT '',
+        restored_at    TEXT,
+        restored_by    TEXT
+    )
+    """,
+    "CREATE INDEX idx_report_exclusions_active ON finance_report_exclusions(restored_at)",
+)
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(1, "initial public-contract schema", _INITIAL),
     Migration(2, "llm cache, budget ledger and deferred jobs", _MIGRATION_2),
@@ -578,6 +599,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration(4, "an occurrence revision is an opaque text token", _MIGRATION_4),
     Migration(5, "passive Telegram webhook inbox for public channel posts", _MIGRATION_5),
     Migration(6, "durable getUpdates offset for the domain-less intake", _MIGRATION_6),
+    Migration(7, "reversible per-operation report exclusions", _MIGRATION_7),
 )
 
 # Tables required by docs/REQUIREMENTS.md section 10.

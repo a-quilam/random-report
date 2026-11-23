@@ -244,7 +244,7 @@ def money_panel(rows: Sequence[Mapping[str, Any]], *, query: Mapping[str, str]) 
     )
 
 
-def money_card_panel(card: Mapping[str, Any], *, csrf: str, status: str | None = None) -> str:
+def money_card_panel(card: Mapping[str, Any], *, csrf: str, status: str | None = None, excluded: bool = False) -> str:
     annotation_form = (
         f'<form method="post" action="/admin/actions/money/annotate" class="action">'
         f'<input type="hidden" name="csrf" value="{e(csrf)}">'
@@ -260,6 +260,26 @@ def money_card_panel(card: Mapping[str, Any], *, csrf: str, status: str | None =
         f'<button type="submit">Изменить сумму</button>'
         f'<p class="hint">Это действие отклоняется: денежные поля в столе только для чтения.</p></form>'
     )
+    if excluded:
+        report_form = (
+            f'<form method="post" action="/admin/actions/report/restore" class="action">'
+            f'<input type="hidden" name="csrf" value="{e(csrf)}">'
+            f'<input type="hidden" name="transaction_id" value="{e(card["transaction_id"])}">'
+            f'<p class="hint" id="report-state">Сейчас операция <strong>исключена из отчёта</strong>: '
+            f"первоисточник неизменен, её можно вернуть.</p>"
+            f'<button type="submit" aria-describedby="report-state">Вернуть в отчёт</button></form>'
+        )
+    else:
+        report_form = (
+            f'<form method="post" action="/admin/actions/report/exclude" class="action">'
+            f'<input type="hidden" name="csrf" value="{e(csrf)}">'
+            f'<input type="hidden" name="transaction_id" value="{e(card["transaction_id"])}">'
+            f'<label for="reason">Исключить из отчёта (обратимо)</label>'
+            f'<input id="reason" name="reason" value="">'
+            f'<p class="hint" id="report-hint">Частично относящаяся операция: она перестаёт попадать в отчёт, '
+            f"исходная запись не меняется, действие обратимо и записывается в журнал.</p>"
+            f'<button type="submit" aria-describedby="report-hint">Исключить из отчёта</button></form>'
+        )
     return (
         f'<h1>Операция {e(card["transaction_id"])}</h1>'
         f"<dl><dt>Дата</dt><dd>{e(card['occurred_on'])}</dd>"
@@ -269,7 +289,7 @@ def money_card_panel(card: Mapping[str, Any], *, csrf: str, status: str | None =
         f"<dt>Экономический класс</dt><dd>{e(card['economic_class'])}</dd>"
         f"<dt>Счёт</dt><dd>{e(card['account'] or '—')}</dd>"
         f"<dt>Проверка</dt><dd>{state_badge(card['check_state'])}</dd></dl>"
-        f"{annotation_form}{money_edit}"
+        f"{annotation_form}{money_edit}{report_form}"
         f'<p><a href="/admin/money">К списку операций</a></p>'
     )
 
@@ -593,7 +613,14 @@ def source_detail_panel(data: Mapping[str, Any]) -> str:
     return f"{head}{runs}{coverage}{last_good}{issues}<p><a href=\"/admin/\">К обзору</a></p>"
 
 
-def settings_panel(view: Mapping[str, Any], audit: Sequence[Mapping[str, Any]], invalidations: Sequence[Mapping[str, Any]], *, csrf: str) -> str:
+def settings_panel(
+    view: Mapping[str, Any],
+    audit: Sequence[Mapping[str, Any]],
+    invalidations: Sequence[Mapping[str, Any]],
+    *,
+    csrf: str,
+    allocation: Mapping[str, Any] | None = None,
+) -> str:
     contour = view["contour"]
     contour_html = (
         f"<p>Публичный контур {e(contour['version'])}: счета {e(', '.join(contour['public_accounts']) or 'нет')}; "
@@ -679,12 +706,53 @@ def settings_panel(view: Mapping[str, Any], audit: Sequence[Mapping[str, Any]], 
         '<label for="version">Версия</label><input id="version" name="version">'
         '<button type="submit">Восстановить как новую версию</button></form>'
     )
+    allocation_block = ""
+    if allocation is not None:
+        shares = "; ".join(
+            f"{key} → {rule['numerator']}/{rule['denominator']} ({rule['rounding']})"
+            for key, rule in sorted(allocation["share_rules"].items())
+        ) or "нет"
+        rent = allocation["rent"]
+        rent_text = (
+            f"{rent['monthly_kopecks']} копеек/месяц с {rent['from_month'] or 'любого месяца с арендой'}"
+            if rent
+            else "нет"
+        )
+        exclusions = table(
+            "Обратимые исключения операций",
+            ("Операция", "Когда", "Кто", "Причина"),
+            ((e(item["transaction_id"]), e(item["excluded_at"]), e(item["actor"] or "—"), e(item["reason"])) for item in allocation["exclusions"]),
+            empty="Исключённых операций нет.",
+        )
+        allocation_block = (
+            "<h2>Правила распределения подвала</h2>"
+            f"<p>Версия правил: {e(allocation['version'])}; подтверждена: {e('да' if allocation['confirmed'] else 'нет')}. "
+            f"Исключённые категории: {e(', '.join(allocation['excluded_category_ids']) or 'нет')}. "
+            f"Доли общих расходов: {e(shares)}. Расчётная аренда: {e(rent_text)}. "
+            f"Категории аренды: {e(', '.join(allocation['rent_category_ids']) or 'нет')}.</p>"
+            "<p>Правила распределения не переписывают остатки: снимки баланса остаются отдельным источником; "
+            "изменение политики только пересчитывает проекцию отчёта.</p>"
+            f'<form method="post" action="/admin/actions/allocation/import" class="action">'
+            f'<input type="hidden" name="csrf" value="{e(csrf)}">'
+            '<label for="alloc_json">Импорт политики (JSON)</label>'
+            '<textarea id="alloc_json" name="allocation_json" rows="4" cols="60"></textarea>'
+            "<p class=\"hint\" id=\"alloc-hint\">Ожидается объект с полями excluded_category_ids, share_rules, rent, "
+            "rent_category_ids, supercategories, corrections. Формат описан в docs/ALLOCATION.md.</p>"
+            f'<button type="submit" aria-describedby="alloc-hint">Записать правила новой версией</button></form>'
+            f"{exclusions}"
+            f'<form method="post" action="/admin/actions/category/hint" class="action">'
+            f'<input type="hidden" name="csrf" value="{e(csrf)}">'
+            '<label for="hint_cat">ID категории</label><input id="hint_cat" name="category_id">'
+            '<label for="hint_text">Публичная подсказка</label><input id="hint_text" name="hint">'
+            "<p class=\"hint\">Пустая подсказка убирает её; подсказка доступна посетителю по касанию и с клавиатуры.</p>"
+            '<button type="submit">Сохранить подсказку</button></form>'
+        )
     schedule = view["schedule"]
     return (
         "<h1>Настройки</h1>"
         f"<p>Расписание: {e(schedule['time'])} {e(schedule['timezone'])} ({e(schedule['systemd_calendar'])}). {e(schedule['note'])}</p>"
         f"<p>Правило донатеров: {e(view['donor_rule'])}</p>"
-        f"{contour_html}{categories}{unmapped}{sources_rows}{sources_form}{donors_form}{members_rows}{member_form}{rollback_form}"
+        f"{contour_html}{categories}{unmapped}{sources_rows}{sources_form}{donors_form}{members_rows}{member_form}{rollback_form}{allocation_block}"
         f"<p>Версии сопоставления категорий: {e(', '.join(view['mapping_versions']['category']) or 'нет')}; "
         f"событий: {e(', '.join(view['mapping_versions']['event']) or 'нет')}.</p>"
         f"{invalidation_rows}{audit_rows}"

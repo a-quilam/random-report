@@ -12,6 +12,8 @@ from datetime import date, datetime
 from typing import Any, Mapping
 
 from ..domain.dto import (
+    AllocationAdjustmentDTO,
+    AllocationDTO,
     CategoryDTO,
     EventTypeAggregateDTO,
     EventsDTO,
@@ -19,7 +21,9 @@ from ..domain.dto import (
     PeriodDTO,
     PublicEventDTO,
     PublicMeetingDTO,
+    RentMonthDTO,
 )
+from ..domain.allocation import AllocationReport
 from ..domain.events import (
     PUBLIC_TYPES,
     EventSelection,
@@ -81,7 +85,11 @@ def _check_params(ctx: ReleaseContext, params: Mapping[str, str] | None) -> None
         raise UnsafeQueryError("requested period does not match the release period")
 
 
-def money_metrics(totals: FinanceTotals, balance: BalanceSummary | None = None) -> dict[str, Any]:
+def money_metrics(
+    totals: FinanceTotals,
+    balance: BalanceSummary | None = None,
+    allocation: "AllocationReport | None" = None,
+) -> dict[str, Any]:
     """Public metric names, all money in integer kopecks, percentages as strings."""
 
     metrics: dict[str, Any] = {
@@ -111,6 +119,29 @@ def money_metrics(totals: FinanceTotals, balance: BalanceSummary | None = None) 
         # map is the only thing that raises the `contour_unconfirmed` label
         "contour_confirmed": "contour_unconfirmed" not in totals.labels,
     }
+    if allocation is not None:
+        # the allocation facts travel inside the same metric map, so the JSON,
+        # the CSV and the HTML read one source of truth (docs/ALLOCATION.md §6)
+        metrics.update(
+            {
+                "allocation_applied": allocation.applied,
+                "allocation_excluded_categories": len(allocation.excluded_categories),
+                "allocation_excluded_operations": allocation.excluded_operations,
+                "shared_expenses_before_kopecks": allocation.shared_expenses_before_kopecks,
+                "shared_expenses_after_kopecks": allocation.shared_expenses_after_kopecks,
+                "rent_computed_kopecks": allocation.computed_rent_kopecks,
+                "rent_bank_kopecks": allocation.bank_rent_kopecks,
+                "rent_applied": allocation.rent_applied,
+                "rent_differs": allocation.rent_differs,
+                "corrections_positive_kopecks": allocation.corrections_positive_kopecks,
+                "corrections_negative_kopecks": allocation.corrections_negative_kopecks,
+                "corrections_unclassified": allocation.corrections_unclassified,
+                "allocation_labels": ",".join(allocation.labels),
+            }
+        )
+        extra = [label for label in allocation.labels if label not in metrics["status_labels"].split(",")]
+        if extra:
+            metrics["status_labels"] = ",".join(filter(None, [metrics["status_labels"], *extra]))
     if balance is not None:
         metrics.update(
             {
@@ -123,12 +154,59 @@ def money_metrics(totals: FinanceTotals, balance: BalanceSummary | None = None) 
     return metrics
 
 
+def allocation_dto(report: AllocationReport | None) -> AllocationDTO:
+    """The public explanation of the owner overrides (counts, totals, labels)."""
+
+    if report is None:
+        return AllocationDTO()
+    public = report.to_public()
+    return AllocationDTO(
+        version=public["version"],
+        confirmed=public["confirmed"],
+        applied=public["applied"],
+        excluded_categories=public["excluded_categories"],
+        excluded_operations=public["excluded_operations"],
+        shared_expenses_before_kopecks=public["shared_expenses_before_kopecks"],
+        shared_expenses_after_kopecks=public["shared_expenses_after_kopecks"],
+        computed_rent_kopecks=public["computed_rent_kopecks"],
+        bank_rent_kopecks=public["bank_rent_kopecks"],
+        rent_applied=public["rent_applied"],
+        rent_differs=public["rent_differs"],
+        corrections_positive_kopecks=public["corrections_positive_kopecks"],
+        corrections_negative_kopecks=public["corrections_negative_kopecks"],
+        corrections_unclassified=public["corrections_unclassified"],
+        adjustments=tuple(
+            AllocationAdjustmentDTO(
+                kind=item["kind"],
+                category_key=item["category_key"],
+                period=item["period"],
+                before_kopecks=item["before_kopecks"],
+                after_kopecks=item["after_kopecks"],
+                note=item["note"],
+            )
+            for item in public["adjustments"]
+        ),
+        rent_months=tuple(
+            RentMonthDTO(
+                month=item["month"],
+                computed_kopecks=item["computed_kopecks"],
+                bank_kopecks=item["bank_kopecks"],
+                applied=item["applied"],
+                note=item["note"],
+            )
+            for item in public["rent_months"]
+        ),
+        labels=tuple(public["labels"]),
+    )
+
+
 def build_money_payload(
     ctx: ReleaseContext,
     totals: FinanceTotals,
     *,
     balance: BalanceSummary | None = None,
     params: Mapping[str, str] | None = None,
+    allocation: AllocationReport | None = None,
 ) -> MoneyDTO:
     _check_params(ctx, params)
     categories = tuple(
@@ -141,6 +219,7 @@ def build_money_payload(
             amount_rub=format_kopecks(row.amount_kopecks),
             share_percent=None if row.share_percent is None else str(row.share_percent),
             operations_count=row.operations_count,
+            hint=row.hint,
         )
         for row in totals.categories
     )
@@ -153,8 +232,9 @@ def build_money_payload(
         completeness=totals.completeness,
         source_labels=tuple(ctx.source_labels),
         unit=MONEY_UNIT,
-        metrics=money_metrics(totals, balance),
+        metrics=money_metrics(totals, balance, allocation),
         categories=categories,
+        allocation=allocation_dto(allocation),
     )
 
 
