@@ -146,15 +146,11 @@ def rub_from_kopecks(kopecks: int | None) -> str:
 
     Presentation only — the arithmetic stays in integer kopecks in the domain
     layer; this is the one place the number is dressed as ``65 089,00 ₽``.
+    The rule itself lives in :mod:`randreport.web.hints`, which the allocation
+    block renders through as well, so one page can never state two formats.
     """
 
-    if kopecks is None:
-        return "нет данных"
-    raw = format_kopecks(kopecks)
-    sign = "-" if raw.startswith("-") else ""
-    whole, _, cents = raw.lstrip("-").partition(".")
-    grouped = f"{int(whole):,}".replace(",", " ")
-    return f"{sign}{grouped},{cents} ₽"
+    return hints.rub_from_kopecks(kopecks)
 
 
 def rub_from_rubles(rubles: int | None) -> str:

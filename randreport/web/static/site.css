@@ -244,6 +244,22 @@ tfoot th, tfoot td { font-weight: 700; background: rgba(222, 215, 200, .22); }
 .minibar { display: block; width: 7rem; max-width: 100%; height: 4px; background: rgba(222, 215, 200, .75); margin-top: .25rem; }
 .minibar rect { fill: var(--plum-2); }
 
+/* the optional approved category hint: a native disclosure, so it needs no
+   script under `default-src 'none'` and is reachable by keyboard and by touch.
+   The marker is kept (it reads as "there is more"), the text carries the same
+   plum/sheet contrast as every other in-page link. */
+.hint-disclosure { margin: .15rem 0 .1rem; max-width: 100%; font-size: .82rem; }
+.hint-disclosure summary {
+  display: inline-block; padding: .05rem .15rem; cursor: pointer;
+  color: var(--plum-2); text-decoration: underline dotted; text-underline-offset: .18em;
+}
+.hint-disclosure summary:hover { color: var(--rust); }
+.hint-disclosure[open] summary { color: var(--ink); border-bottom: 1px solid var(--hair); }
+.hint-text {
+  display: block; margin: .2rem 0 .25rem; max-width: 46ch;
+  color: var(--ink-2); overflow-wrap: anywhere;
+}
+
 /* coverage bar: SVG geometry, so a strict `style-src 'self'` cannot drop it */
 .coverage { margin: .7rem 0; }
 .coverage figcaption { font-size: .9rem; margin-bottom: .35rem; }

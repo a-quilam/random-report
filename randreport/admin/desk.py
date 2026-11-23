@@ -249,6 +249,58 @@ def _policy(conn: sqlite3.Connection):
     return policy_from_store(conn)
 
 
+_MONEY_SELECT = """
+    SELECT t.*, c.title AS source_category_title, c.raw_title AS source_category_raw,
+           a.note AS annotation
+      FROM finance_transactions AS t
+      LEFT JOIN finance_categories AS c ON c.category_id = t.category_id
+      LEFT JOIN finance_annotations AS a ON a.transaction_id = t.transaction_id
+     WHERE t.deleted = 0
+"""
+
+
+def _money_index(conn: sqlite3.Connection) -> tuple[dict[str, str], dict[str, str], set[str]]:
+    """The contour view of one row: public labels, classes and accounts."""
+
+    manifest = _manifest(conn)
+    labels = {str(key): str(value) for key, value in (manifest.get("category_labels") or {}).items()}
+    classes = {str(key): str(value) for key, value in (manifest.get("category_classes") or {}).items()}
+    return labels, classes, set(_policy(conn).public_accounts)
+
+
+def _money_view(
+    conn: sqlite3.Connection,
+    row: Any,
+    *,
+    labels: Mapping[str, str],
+    classes: Mapping[str, str],
+    public_accounts: set[str],
+) -> dict[str, Any] | None:
+    """One source row as the desk shows it, or ``None`` outside the public contour."""
+
+    source = str(row["source_account"] or "")
+    target = str(row["target_account"] or "")
+    accounts = {account for account in (source, target) if account}
+    if accounts and not accounts <= public_accounts:
+        # an operation touching an account outside the public contour is not shown
+        return None
+    category = None if row["category_id"] is None else str(row["category_id"])
+    label = labels.get(category or "", None)
+    return {
+        "transaction_id": str(row["transaction_id"]),
+        "occurred_on": str(row["occurred_on"]),
+        "amount_kopecks": int(row["amount_kopecks"]),
+        "direction": "out" if source else "in",
+        "account": source or target,
+        "category_key": category,
+        "category_label": label or "без сопоставления",
+        "economic_class": classes.get(category or "", "unclassified"),
+        "currency": str(row["currency"]),
+        "note": row["annotation"],
+        "check_state": checks.effective_state(conn, "finance_transaction", str(row["transaction_id"])),
+    }
+
+
 def money_rows(
     conn: sqlite3.Connection,
     *,
@@ -259,69 +311,60 @@ def money_rows(
 ) -> tuple[dict[str, Any], ...]:
     """Source operations *inside the public contour*; private ones are not listed."""
 
-    policy = _policy(conn)
-    manifest = _manifest(conn)
-    labels = {str(key): str(value) for key, value in (manifest.get("category_labels") or {}).items()}
-    classes = {str(key): str(value) for key, value in (manifest.get("category_classes") or {}).items()}
-    public_accounts = set(policy.public_accounts)
+    labels, classes, public_accounts = _money_index(conn)
     rows = conn.execute(
-        """
-        SELECT t.*, c.title AS source_category_title, c.raw_title AS source_category_raw,
-               a.note AS annotation
-          FROM finance_transactions AS t
-          LEFT JOIN finance_categories AS c ON c.category_id = t.category_id
-          LEFT JOIN finance_annotations AS a ON a.transaction_id = t.transaction_id
-         WHERE t.deleted = 0
-         ORDER BY t.occurred_on DESC, t.transaction_id
-         LIMIT ?
-        """,
+        _MONEY_SELECT + " ORDER BY t.occurred_on DESC, t.transaction_id LIMIT ?",
         (max(limit, 1) * 5,),
     ).fetchall()
     out: list[dict[str, Any]] = []
     for row in rows:
-        source = str(row["source_account"] or "")
-        target = str(row["target_account"] or "")
-        accounts = {account for account in (source, target) if account}
-        if accounts and not accounts <= public_accounts:
-            # an operation touching an account outside the public contour is not shown
+        view = _money_view(conn, row, labels=labels, classes=classes, public_accounts=public_accounts)
+        if view is None:
             continue
-        category = None if row["category_id"] is None else str(row["category_id"])
-        if period and not str(row["occurred_on"]).startswith(period):
+        if period and not view["occurred_on"].startswith(period):
             continue
-        if category_id and category != category_id:
+        if category_id and view["category_key"] != category_id:
             continue
-        label = labels.get(category or "", None)
         haystack = " ".join(
             str(part or "")
-            for part in (row["transaction_id"], label, row["source_category_title"], row["source_category_raw"], category, row["occurred_on"])
+            for part in (
+                row["transaction_id"],
+                labels.get(view["category_key"] or "", None),
+                row["source_category_title"],
+                row["source_category_raw"],
+                view["category_key"],
+                view["occurred_on"],
+            )
         ).lower()
         if text and text.lower() not in haystack:
             continue
-        out.append(
-            {
-                "transaction_id": str(row["transaction_id"]),
-                "occurred_on": str(row["occurred_on"]),
-                "amount_kopecks": int(row["amount_kopecks"]),
-                "direction": "out" if source else "in",
-                "account": source or target,
-                "category_key": category,
-                "category_label": label or "без сопоставления",
-                "economic_class": classes.get(category or "", "unclassified"),
-                "currency": str(row["currency"]),
-                "note": row["annotation"],
-                "check_state": checks.effective_state(conn, "finance_transaction", str(row["transaction_id"])),
-            }
-        )
+        out.append(view)
         if len(out) >= max(limit, 1):
             break
     return tuple(out)
 
 
+def money_row(conn: sqlite3.Connection, transaction_id: str) -> dict[str, Any] | None:
+    """One operation of the public contour by its identifier.
+
+    The list window (:data:`MONEY_LIMIT`) bounds the *list*, not the reach: an
+    operation older than the window is still openable, annotatable and
+    excludable, with exactly the same account-contour check as the list.  A row
+    that leaves the public contour (a private or quarantined account) stays
+    invisible here too — this is a lookup by identifier, not a wider contour.
+    """
+
+    labels, classes, public_accounts = _money_index(conn)
+    row = conn.execute(_MONEY_SELECT + " AND t.transaction_id = ?", (str(transaction_id),)).fetchone()
+    if row is None:
+        return None
+    return _money_view(conn, row, labels=labels, classes=classes, public_accounts=public_accounts)
+
+
 def money_card(conn: sqlite3.Connection, transaction_id: str) -> dict[str, Any] | None:
-    for row in money_rows(conn, limit=MONEY_LIMIT):
-        if row["transaction_id"] == transaction_id:
-            return row
-    return None
+    """The card page of one operation, reachable regardless of the list window."""
+
+    return money_row(conn, transaction_id)
 
 
 def annotate(conn: sqlite3.Connection, *, transaction_id: str, note: str, actor: str, now: str | None = None) -> dict[str, Any]:
