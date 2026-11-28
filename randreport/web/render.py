@@ -1766,19 +1766,20 @@ def _year_of(period_label: str) -> str:
 
 
 def subscriber_delta(
-    points: Sequence[Any], *, days: int = 30
+    points: Sequence[Any], *, days: int = 30, min_days: int = 8
 ) -> tuple[int | None, str | None, int | None]:
-    """Прирост подписчиков за полные ``days`` суток по датированным точкам.
+    """Прирост подписчиков по фактическим датированным точкам (вариант А).
 
-    Only real snapshots count: the base point must lie at least ``days`` before the
-    latest one. A gap in the middle is not filled in and, when the history is
-    shorter than the window, the answer is ``(None, None, None)`` — the poster then
-    says so instead of drawing a growth of its own.
-
-    The third value is the length of the interval the change actually covers. A
-    dated history rarely has a point exactly ``days`` back (points arrive with the
-    monthly release), so the base can be older than the window; the poster prints
-    that real interval instead of labelling a rolled-over change «за 30 дней».
+    Правило владельца (карточка t_3da0472f): доступно ≥ ``min_days`` суток
+    истории — печатаем «+N за M дней», где M — фактическое число дней между
+    датами использованных замеров. При истории ≥ ``days`` суток база — самая
+    старая точка внутри окна ``days`` (замер ровно на ``days`` суток раньше,
+    а при пропуске дня — крайняя доступная точка окна); если в окне точек нет
+    вовсе, базой становится самая старая имеющаяся точка, и подпись несёт
+    реальные даты обеих крайних точек. Меньше ``min_days`` суток — ответ
+    ``(None, None, None)``: строка говорит честно, что сравнивать нечем.
+    Только фактические измерения: ни интерполяции, ни подмены старым замером
+    под видом 30 дней — возвращаемая длина интервала всегда настоящая.
     """
 
     if len(points) < 2:
@@ -1786,13 +1787,12 @@ def subscriber_delta(
     ordered = sorted(points, key=lambda point: point.on)
     latest = ordered[-1]
     cutoff = latest.on - timedelta(days=days)
-    base = None
-    for point in ordered[:-1]:
-        if point.on <= cutoff:
-            base = point
-    if base is None:
+    inside = [point for point in ordered[:-1] if point.on >= cutoff]
+    base = inside[0] if inside else ordered[0]
+    span = (latest.on - base.on).days
+    if span < min_days:
         return None, None, None
-    return latest.subscribers - base.subscribers, base.on.isoformat(), (latest.on - base.on).days
+    return latest.subscribers - base.subscribers, base.on.isoformat(), span
 
 
 def _delta_line(

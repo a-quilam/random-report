@@ -70,17 +70,23 @@ def page(*, period_label, money, events, community, historical, events_previous=
     subs = community.metrics.get('latest_subscribers') if community else None
     points = community.channel_points if community else ()
     delta, base_on, span = render.subscriber_delta([*points, *subscribers_extra]) if points and subs is not None else (None,None,None)
-    # An exact 30-day base answers with the real change; without one the sheet says
-    # so honestly (never a zero, never the nearest older snapshot dressed up as 30
-    # days). The dated formulation and the interval live in the subline's hint.
-    if delta is None or span != 30:
+    # Вариант А (слово владельца): ≥8 суток фактической истории → «+N за M дней»
+    # с настоящей длиной интервала; ≥30 суток → автоматически «+N за 30 дней»
+    # (точка ровно 30 суток назад, а при пропуске дня — реальные даты крайних
+    # доступных точек окна в подсказке). Меньше 8 суток — прежнее честное
+    # «Нет сравнения за 30 дней» (не ноль, не подменённый старый замер).
+    if delta is None:
         delta_text = 'Нет сравнения за 30 дней'
         # Short, plaque-sized hint: the tooltip stays a small overlay, so the long
         # reasoning about dated snapshots lives in the methodology section instead.
         delta_hint = 'Базы ровно за 30 суток в публичных выпусках нет — старым замером прирост не подменяем.'
     else:
         delta_text = f'{"↗ +" if delta >= 0 else "↘ −"}{render._thousands(abs(delta))} за {span} {render.plural(span,"день","дня","дней")}'
-        delta_hint = f'Изменение подписчиков за 30 суток по датированным снимкам; база — снимок на {base_on}.'
+        if span == 30:
+            delta_hint = f'Изменение подписчиков за 30 суток по датированным снимкам; база — снимок на {base_on}.'
+        else:
+            latest_on = max(point.on for point in [*points, *subscribers_extra]).isoformat()
+            delta_hint = f'Реальный интервал по фактическим ночным замерам бота: {base_on} — {latest_on}.'
     month = render.month_in(period_label) if len(period_label)==7 else None
     prev_label = _MONTH[int(period_label[-2:])-1] if month else 'Прошлый месяц'
     previous = f'{prev_label}: {render._thousands(events_previous)}' if month else 'За выбранный период'

@@ -9,10 +9,11 @@ module pins the *new* behaviour the transfer added, which had no test of its own
   identical buttons;
 * ``plural``/``month_in`` read Russian correctly for 1/2/5/11/21 and answer
   ``None`` where a month name makes no sense (a year, a range, «всё время»);
-* ``subscriber_delta``/``_delta_line`` state a change only when a dated base at
-  least 30 days old exists, print the *real* interval — a base far outside the
-  window must not be labelled «за 30 дней» (the defect review round 1 returned) —
-  and say «истории не хватает» instead of inventing growth;
+* ``subscriber_delta``/``_delta_line`` state a change whenever at least 8 days of
+  real dated history exist (variant A, t_3da0472f), print the *real* interval —
+  a base far outside the window must not be labelled «за 30 дней» (the defect
+  review round 1 returned) — and say «истории не хватает» instead of inventing
+  growth when the history is shorter than 8 days;
 * ``announcements_block`` prints a card only for a record that carries a real
   number of forwards *and* a real link, largest first, at most three, and names
   the gap when the allowed data has no counters at all;
@@ -151,10 +152,19 @@ class TestSubscriberDelta(unittest.TestCase):
     def test_no_points_at_all_is_no_history(self) -> None:
         self.assertEqual((None, None, "прироста за 30 суток нет: истории не хватает"), self.delta_and_line([]))
 
-    def test_a_base_inside_the_window_does_not_answer(self) -> None:
-        # 20 days of history is not the full 30 the poster promises
+    def test_twenty_days_of_history_state_their_real_interval(self) -> None:
+        # Variant A (t_3da0472f): ≥8 days of real history now answer with the
+        # actual interval length instead of the honest refusal.
         delta, base_on, line = self.delta_and_line(
             points((date(2025, 7, 10), 4100), (date(2025, 7, 30), 4224))
+        )
+        self.assertEqual(124, delta)
+        self.assertEqual("2025-07-10", base_on)
+        self.assertEqual("↗ +124 за 20 дней (с 2025-07-10)", line)
+
+    def test_seven_days_of_history_is_still_no_history(self) -> None:
+        delta, base_on, line = self.delta_and_line(
+            points((date(2025, 7, 23), 4100), (date(2025, 7, 30), 4224))
         )
         self.assertIsNone(delta)
         self.assertIsNone(base_on)

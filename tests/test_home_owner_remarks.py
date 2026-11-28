@@ -14,9 +14,11 @@ remark:
   ``.source-sheet`` moved onto its own pseudo-elements, so the container no longer
   clips the plate that the first row floats above itself.
 * (4)/(4.1) the small line under the subscriber count — and the past-month line —
-  carry a keyboard-reachable hover plate (``tabindex`` + ``data-help``); an exact
-  30-day base is reported as a real change, otherwise the honest dated wording,
-  never a fabricated zero.
+  carry a keyboard-reachable hover plate (``tabindex`` + ``data-help``); variant A
+  (t_3da0472f) states a change whenever at least 8 days of real history exist,
+  names its real length (an exact 30-day base reads «за 30 дней»), puts the real
+  dates of the extreme points into the hint, and keeps the honest wording when
+  the history is shorter — never a fabricated zero.
 * (5)/(6) the finance plate prints the short month name; «предварительно» and the
   snapshot date live in the hover plate of the caption; the note is the short
   «НЕ ПОКРЫТО: N ₽» from the public DTO, and an unknown value reads «нет данных»,
@@ -122,7 +124,7 @@ class TestSublineHintsAreReachable(unittest.TestCase):
         # the hint is a plate, not a click disclosure
         self.assertNotIn('<details class="hint subline-hint">', html)
 
-    def test_a_change_is_only_claimed_for_an_exact_thirty_day_base(self) -> None:
+    def test_the_change_names_its_real_interval(self) -> None:
         from datetime import date
         from types import SimpleNamespace as Point
 
@@ -141,8 +143,28 @@ class TestSublineHintsAreReachable(unittest.TestCase):
                 subscribers_extra=(start,),
             )
 
+        # Вариант А: база ровно 30 суток → «за 30 дней», база 31 сутки без точки
+        # на 30-е сутки → фактический интервал с реальными датами в подсказке,
+        # два замера ближе 8 суток → прежнее честное состояние.
         self.assertIn("+5 за 30 дней", text(24))
-        self.assertIn("Нет сравнения за 30 дней", text(23))
+        html = text(23)
+        self.assertIn("+5 за 31 день", html)
+        self.assertIn("2026-10-23", html)
+        end = Point(on=date(2026, 11, 23), subscribers=105)
+        close = Point(on=date(2026, 11, 16), subscribers=100)
+        close_html = page(
+            period_label="2026-11",
+            money=None,
+            events=None,
+            historical={},
+            community=Point(
+                metrics={"latest_subscribers": 105, "latest_on": "2026-11-23"},
+                channel_points=(end,),
+            ),
+            subscribers_extra=(close,),
+        )
+        self.assertIn("Нет сравнения за 30 дней", close_html)
+        self.assertNotIn("+5", close_html)
 
     def test_an_unknown_change_is_not_dressed_as_a_zero(self) -> None:
         html = page(period_label="2026-11", money=None, events=None, historical={}, community=None)
