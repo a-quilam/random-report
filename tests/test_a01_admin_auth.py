@@ -456,7 +456,7 @@ class AccessControlTests(AdminTestCase):
 class InjectionAndLeakTests(AdminTestCase):
     def test_stored_markup_is_escaped_everywhere(self) -> None:
         attack = '<script>alert(1)</script><img src=x onerror=alert(2)>'
-        row = self.conn.execute("SELECT news_id FROM news_items LIMIT 1").fetchone()
+        row = self.conn.execute("SELECT news_id FROM news_items WHERE classification = 'news' LIMIT 1").fetchone()
         news_id = str(row["news_id"])
         news.edit(self.conn, news_id=news_id, actor=fa.ADMIN_ID, title=attack, summary='" onmouseover="alert(3)')
         client, _response = self.signed_in()

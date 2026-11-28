@@ -64,8 +64,17 @@ def _require_str(value: Any, field_name: str, *, limit: int) -> str:
 def _parse_confidence(value: Any) -> str | None:
     if value is None:
         return None
-    if isinstance(value, bool) or isinstance(value, float):
+    if isinstance(value, bool):
         raise ExtractionInvalid("confidence must be a string or an integer, not a float")
+    if isinstance(value, float):
+        # models answer with fractional confidence (0.95) although the contract
+        # says a word or an integer percentage: coerce, refuse nonsense scales.
+        if 0 < value <= 1:
+            value = round(value * 100)
+        elif 1 < value <= 100:
+            value = round(value)
+        else:
+            raise ExtractionInvalid("float confidence must be in (0, 1] or (1, 100]")
     if isinstance(value, int):
         if not 0 <= value <= 100:
             raise ExtractionInvalid("integer confidence must be between 0 and 100")
@@ -116,15 +125,23 @@ def parse_extraction(raw: Any) -> Extraction:
     ids = raw["source_message_ids"]
     if not isinstance(ids, Sequence) or isinstance(ids, (str, bytes)) or not ids:
         raise ExtractionInvalid("source_message_ids must be a non-empty list")
-    if not all(isinstance(item, str) and item for item in ids):
-        raise ExtractionInvalid("source_message_ids must contain strings")
+    # models occasionally emit numeric JSON ids (e.g. [1621]) even though the
+    # contract says strings: coerce whole numbers, refuse everything else.
+    coerced_ids: list[str] = []
+    for item in ids:
+        if isinstance(item, bool) or not isinstance(item, (str, int)):
+            raise ExtractionInvalid("source_message_ids must contain strings")
+        mid = str(item)
+        if not mid:
+            raise ExtractionInvalid("source_message_ids must contain strings")
+        coerced_ids.append(mid)
 
     category = raw["category"]
     if category is not None and (not isinstance(category, str) or not category.strip()):
         raise ExtractionInvalid("category must be a non-empty string or null")
 
     return Extraction(
-        source_message_ids=tuple(ids),
+        source_message_ids=tuple(coerced_ids),
         classification=classification,
         category=None if category is None else category.strip(),
         title=_require_str(raw["title"], "title", limit=MAX_TITLE),

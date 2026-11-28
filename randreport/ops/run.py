@@ -12,6 +12,7 @@ from __future__ import annotations
 import fcntl
 import dataclasses
 import json
+import logging
 import os
 import sqlite3
 import time
@@ -32,6 +33,8 @@ from .pipeline import PublicRelease, ReleaseBuilder
 from .publish import publish_release
 from .schedule import logical_date_for, utc_now
 from .status import SourceStatus, overall_freshness, source_status
+
+LOGGER = logging.getLogger(__name__)
 
 
 class SourceError(RuntimeError):
@@ -436,6 +439,26 @@ class InboxAdapter:
         )
 
 
+def _merged_outcome(base: BatchOutcome, extra: BatchOutcome) -> BatchOutcome:
+    """Combine two extractor outcomes: counts add, flags and issues union."""
+
+    return BatchOutcome(
+        items=base.items + extra.items,
+        issues=tuple(dict.fromkeys(base.issues + extra.issues)),
+        deferred=base.deferred or extra.deferred,
+        degraded=base.degraded or extra.degraded,
+        calls=base.calls + extra.calls,
+        tokens=base.tokens + extra.tokens,
+        cache_hit=base.cache_hit or extra.cache_hit,
+        published=base.published + extra.published,
+        announcements=base.announcements + extra.announcements,
+        other=base.other + extra.other,
+        rejected=base.rejected + extra.rejected,
+        posts=base.posts + extra.posts,
+        rate_limited=base.rate_limited or extra.rate_limited,
+    )
+
+
 class NewsAdapter:
     """One daily LLM pass over new/changed public posts.
 
@@ -482,6 +505,68 @@ class NewsAdapter:
         truncated = len(wanted) > self._batch_size
         return tuple(wanted[: self._batch_size]), truncated
 
+    def _retry_deferred(self, conn: sqlite3.Connection, cutoff: datetime) -> tuple[BatchOutcome, int, int]:
+        """Re-run the deferred LLM batches recorded by earlier syncs.
+
+        Each ``deferred_jobs`` row is one batch that could not be extracted (a
+        rate limit or an exhausted budget).  The payload keeps only message
+        ids: posts deleted since are dropped, the rest go back through the
+        extractor under the *original* logical date, so the retry is charged to
+        the day that was deferred — and the rate-limited call (never written to
+        ``llm_budget_ledger``) does not double-burn the budget.  A row is
+        deleted when its batch went through without a new deferral and without
+        ``llm_error``/``llm_invalid_output``; anything else stays and is
+        retried the next sync.  The night cursor is not touched: it belongs to
+        the regular pending pass.  With no provider configured nothing is
+        retried and nothing is cleared — the rows keep their evidence value.
+        """
+
+        jobs = repo.deferred_jobs_list(conn)
+        if not jobs or self._extractor.provider is None:
+            return BatchOutcome(), 0, 0
+        archived = {post.message_id: post for post in repo.archived_posts(conn)}
+        merged = BatchOutcome()
+        retried = cleared = 0
+        for job in jobs:
+            job_id = str(job["job_id"])
+            logical_date = job_id.removeprefix("news_")
+            try:
+                ids = [str(mid) for mid in json.loads(str(job["payload"]))]
+            except ValueError:
+                LOGGER.warning("deferred_jobs: %s has an unreadable payload, row kept", job_id)
+                continue
+            posts = [archived[mid] for mid in ids if mid in archived]
+            dropped = len(ids) - len(posts)
+            if not posts:
+                # every source post was deleted since the deferral: there is
+                # nothing left to extract, the row has done its job
+                repo.deferred_jobs_delete(conn, job_id)
+                LOGGER.info(
+                    "deferred_jobs: cleared %s without a retry (%d source posts deleted)", job_id, dropped
+                )
+                cleared += 1
+                continue
+            job_outcome = BatchOutcome()
+            for start in range(0, len(posts), self._batch_size):
+                chunk = tuple(posts[start : start + self._batch_size])
+                job_outcome = _merged_outcome(
+                    job_outcome, self._extractor.run(chunk, logical_date=logical_date)
+                )
+            failed = job_outcome.deferred or bool({"llm_error", "llm_invalid_output"} & set(job_outcome.issues))
+            if failed:
+                reason = "deferred again" if job_outcome.deferred else ",".join(job_outcome.issues)
+                LOGGER.info("deferred_jobs: %s stays (%s), retried at the next sync", job_id, reason)
+            else:
+                repo.deferred_jobs_delete(conn, job_id)
+                LOGGER.info(
+                    "deferred_jobs: cleared %s after retry (%d posts, published=%d announcements=%d)",
+                    job_id, len(posts), job_outcome.published, job_outcome.announcements,
+                )
+                cleared += 1
+            retried += 1
+            merged = _merged_outcome(merged, job_outcome)
+        return merged, retried, cleared
+
     def coverage_reasons(self, outcome: BatchOutcome, *, truncated: bool) -> tuple[str, ...]:
         reasons: list[str] = []
         if not self._history_verified:
@@ -500,6 +585,7 @@ class NewsAdapter:
         return tuple(reasons)
 
     def sync(self, *, conn: sqlite3.Connection, cutoff: datetime, logical_date: str, cursor: str | None) -> SourceOutcome:
+        retry_outcome, retried, cleared = self._retry_deferred(conn, cutoff)
         pending, truncated = self._pending(conn, cursor)
         if truncated:
             repo.record_issue(
@@ -512,6 +598,8 @@ class NewsAdapter:
                 now=cutoff.isoformat(),
             )
         outcome = self._extractor.run(pending, logical_date=logical_date)
+        if retried:
+            outcome = _merged_outcome(retry_outcome, outcome)
         # a deleted source post is removed from the public chronicle, history kept
         archived = {post.message_id: post for post in repo.archived_posts(conn, include_deleted=True)}
         for row in repo.public_news_items(conn):
@@ -542,6 +630,7 @@ class NewsAdapter:
             payload={
                 "published": outcome.published,
                 "announcements": outcome.announcements,
+                "other": outcome.other,
                 "rejected": outcome.rejected,
                 "deferred": outcome.deferred,
                 "degraded": outcome.degraded,
@@ -550,6 +639,8 @@ class NewsAdapter:
                 "calls": outcome.calls,
                 "posts": outcome.posts,
                 "batch_truncated": truncated,
+                "deferred_jobs_retried": retried,
+                "deferred_jobs_cleared": cleared,
                 "coverage": coverage,
                 "coverage_reasons": list(reasons),
                 "issues": list(outcome.issues),

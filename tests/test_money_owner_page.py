@@ -45,12 +45,27 @@ class OwnerRouteTests(SiteTestCase):
 
         # the owner's ledger: grey share note under each labelled row
         self.assertIn('<span class="cat-share">61,5% от суммы</span>', page)
-        # a filled sheet shows only real categories; the two service rows
-        # belong to the partial state or to a non-zero remainder
-        complete = self.fixture.get('/money', 'period=' + PERIOD)[1]
-        if 'ПРЕДВАРИТЕЛЬНО' not in complete:
-            self.assertNotIn('Разнесено по категориям', complete)
-            self.assertNotIn('Ещё не разобрано', complete)
+
+    def test_a_complete_month_shows_no_service_rows(self):
+        """The filled sheet shows only real categories — unconditionally."""
+        with TemporaryDirectory() as tmp:
+            dto = snapshot(expense_kopecks=10840000, compensation_kopecks=6720000,
+                           subsidy_kopecks=4120000, coverage_percent='62.0', coverage_is_final=True,
+                           unclassified_in_kopecks=0, unclassified_out_kopecks=0)
+            dto = replace(dto, period=replace(dto.period, requested='2025-03'))
+            dest = Path(tmp) / 'rel_2025-03'
+            dest.mkdir()
+            (dest / 'index.json').write_text('{}')
+            (dest / 'money.json').write_text(json.dumps(dto.to_public_dict()))
+            from tests.test_web_public_site import make_wsgi_request
+            site = PublicSite(release_dir=tmp)
+            status, page = make_wsgi_request(site, '/money', 'period=2025-03')
+            self.assertEqual(status, 200)
+            self.assertIn('ПЕРИОД РАЗНЕСЁН', page)          # complete, not preliminary
+            self.assertNotIn('Разнесено по категориям', page)
+            self.assertNotIn('Ещё не разобрано', page)
+            self.assertNotIn('ОСТАТОК В КАССЕ', page)
+            self.assertIn('ПРО ВЗНОСЫ', page)
 
     def test_missing_period_offers_neither_export_nor_fake_percentage(self):
         code, page, _ = self.fixture.get('/money', 'period=2040-01')

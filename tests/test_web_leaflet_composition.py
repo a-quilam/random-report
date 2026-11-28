@@ -214,6 +214,16 @@ class TestLeafletFurniture(SiteTestCase):
                     self.assertIn('обновление в 03:00 МСК', text)
                     self.assertIn('<footer class="endnote">', text)
                     continue
+                if route == '/events':
+                    # the approved events poster: the owner's wide house logo is
+                    # the brand, the prototype's own nav/footer voice stays
+                    self.assertIn('src="/static/events-logo.webp"', text)
+                    self.assertIn('aria-label="Навигация по сайту"', text)
+                    self.assertIn('aria-label="Навигация внизу страницы"', text)
+                    self.assertIn('<main class="page" id="top">', text)
+                    self.assertIn('ОБНОВЛЕНИЕ В 03:00 МСК', text)
+                    self.assertIn('<footer class="foot">', text)
+                    continue
                 if route == '/':
                     self.assertIn('<img class="brand-mark" src="/static/brand-logo.png"', text)
                     self.assertNotIn('class="star"', text)
@@ -239,6 +249,11 @@ class TestLeafletFurniture(SiteTestCase):
                     self.assertIn('class="small-rubric"', text)
                     self.assertIn('class="one-liner"', text)
                     continue
+                if route == '/events':
+                    # the poster's approved h1 and its own lead line
+                    self.assertIn('id="page-title"', text)
+                    self.assertIn('class="lead"', text)
+                    continue
                 self.assertRegex(text, r'class="[^"]*\beyebrow\b', f"{route} has no eyebrow line")
                 self.assertIn('class="lead"', text)
 
@@ -254,8 +269,18 @@ class TestLeafletFurniture(SiteTestCase):
             with self.subTest(route=route):
                 text = self.pages[route]
                 self.assertNotIn("<style", text)
-                self.assertNotIn("<script", text)
-                self.assertNotIn("style=\"", text)
+                self.assertNotIn("<script>", text)
+                self.assertNotIn('style="', text)
+                if route == "/events":
+                    # the approved poster's interaction lives in one static file;
+                    # scripts are self-hosted files or inert JSON data only
+                    for chunk in text.split("<script")[1:]:
+                        self.assertTrue(
+                            chunk.startswith(' src="/static/') or chunk.startswith(' type="application/json"'),
+                            f"/events has an unexpected script element: {chunk[:60]!r}",
+                        )
+                else:
+                    self.assertNotIn("<script", text)
 
     def test_the_clock_is_the_documented_one_and_nothing_else(self) -> None:
         for route in ROUTES:
@@ -409,9 +434,11 @@ class TestCoverageAndEventsRendering(unittest.TestCase):
 
     def test_closed_events_leave_no_trace_but_are_counted(self) -> None:
         response = self._events_page()
-        self.assertIn("только агрегат", response)
+        # the poster counts the closed contour only in the hidden aggregate
+        self.assertRegex(response, r'<strong id="hiddenCount">\d+</strong>')
         self.assertNotIn("Закрытая встреча коммунаров", response)
         self.assertNotIn("Внутреннее собрание", response)
+        self.assertNotIn("Репетиция", response)
 
     def _events_page(self) -> str:
         with tempfile.TemporaryDirectory() as tmp:
@@ -426,10 +453,13 @@ class TestCoverageAndEventsRendering(unittest.TestCase):
 
     def test_calendar_marks_only_public_days_and_says_so(self) -> None:
         page = self._events_page()
-        self.assertIn("2025-07-05", page)
-        self.assertIn("2025-07-12", page)
-        self.assertNotIn("2025-07-15", page)  # a closed date leaves no cell mark
-        self.assertIn("Дни без отметки могут содержать закрытые события", page)
+        # the poster grid speaks in day numbers with public dots; a closed date
+        # leaves no dot, no count and no label of its own
+        self.assertIn('aria-label="5 июля: 1 публичное событие"', page)
+        self.assertIn('aria-label="12 июля: 1 публичное событие"', page)
+        self.assertIn('aria-label="15 июля: 0 публичных событий"', page)  # closed: nothing marked
+        self.assertNotIn("Закрытая встреча коммунаров", page)
+        self.assertIn("закрытые учитываем без подробностей", page)
 
     def test_chronicle_is_a_dated_log_with_sources(self) -> None:
         chronicle = ChronicleDTO(
@@ -474,8 +504,13 @@ class TestPeriodLinks(SiteTestCase):
                 self.assertIn(f'href="/money?period={PERIOD}"', text)
                 self.assertIn(f'href="/methodology?period={PERIOD}"', text)
                 self.assertIn(f'<option value="{PERIOD}" selected>', text)
-                self.assertRegex(text, r'<select id="period-select" name="period"( aria-label="[^"]*")?>')
-                self.assertIn('<label for="period-select">', text)
+                if route == "/events":
+                    # the mock's own select keeps its prototype ids
+                    self.assertIn('<select class="period-select" id="month" name="period"', text)
+                    self.assertIn('<label class="control-label" for="month">', text)
+                else:
+                    self.assertRegex(text, r'<select id="period-select" name="period"( aria-label="[^"]*")?>')
+                    self.assertIn('<label for="period-select">', text)
 
     def test_the_archive_index_links_every_published_period(self) -> None:
         text = self.pages["/reports"]
@@ -505,8 +540,12 @@ class TestKeyboardAndCss(SiteTestCase):
             self.assertIn(breakpoint, css)
         for route in ROUTES:
             with self.subTest(route=route):
-                anchor = '#main' if route == '/money' else '#content'
-                self.assertIn(f'<a class="skip" href="{anchor}">', self.pages[route])
+                if route == "/events":
+                    self.assertIn('<a class="sr" href="#calendar">', self.pages[route])
+                elif route == '/money':
+                    self.assertIn('<a class="skip" href="#main">', self.pages[route])
+                else:
+                    self.assertIn('<a class="skip" href="#content">', self.pages[route])
 
     def test_labels_and_captions_carry_the_meaning_of_each_table(self) -> None:
         text = self.pages["/money"]

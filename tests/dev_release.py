@@ -30,7 +30,7 @@ DONOR_NEWS = [
         summary="Появились новые двери и свет в коридоре.",
     ),
     fi.news_item(
-        message_ids=("701", "702"),
+        message_ids=("701",),
         classification="announcement",
         category=None,
         title="Анонс концерта",

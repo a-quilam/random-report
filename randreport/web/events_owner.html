@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#F0EEE6">
+<title>Мероприятия — А дорог ли РанДом?</title>
+<link rel="stylesheet" href="/static/events.css">
+</head>
+<body>
+<a class="sr" href="#calendar">К календарю</a>
+<main class="page" id="top">
+  <header class="topbar">
+    <a class="brand" href="/" aria-label="РанДом Культуры — главная">$brand</a>
+    <div class="topright">
+      <nav class="nav nav-top" aria-label="Навигация по сайту">$nav</nav>
+      <div class="edition">✳ ОТКРЫТАЯ ОТЧЁТНОСТЬ <b>·</b> ОБНОВЛЕНИЕ В 03:00 МСК</div>
+    </div>
+  </header>
+  <section class="hero" aria-labelledby="page-title">
+    <h1 class="hero-heading" id="page-title"><span class="paper news part1">МЕРО</span><span class="paper red part2">ПРИЯТИЯ</span><span class="paper yellow part3">!</span></h1>
+    <p class="lead">ВСЁ, ЧТО ПРОИСХОДИЛО В ПОДВАЛЕ. И НЕМНОГО ТОГО, ЧТО МЫ НЕ РАССКАЖЕМ.</p>
+    <figure class="hero-photo">$photo</figure>
+    <div class="hero-figures" aria-label="Статистика мероприятий">
+      <strong class="paper purple hero-count" id="heroCount">$hero_count</strong>
+      <span class="paper news hero-tag" id="heroTag">$hero_tag</span>
+      <span class="hero-prev" id="heroPrev">$hero_prev</span>
+    </div>
+    <span class="hero-ref">ФОТО: РАНДОМ КУЛЬТУРЫ · КАДР ИЗ АРХИВА</span>
+  </section>
+  <hr class="sectionrule">
+  <section class="calendar-section" id="calendar" aria-labelledby="cal-title">
+    <div class="section-row"><h2 class="section-title" id="cal-title">КОГДА <span class="stripe">ЭТО БЫЛО?</span></h2><p class="section-hint">Нажми на дату — увидишь публичные события этого дня.</p></div>
+    <div class="controls"><form action="/events" method="get" class="period-form" id="periodForm"><label class="control-label" for="month">ПЕРИОД</label><span class="select-wrap"><select class="period-select" id="month" name="period" aria-label="Выбрать месяц">$options</select></span><noscript><button class="period-submit" type="submit">Показать</button></noscript></form><span class="month-asof">$asof_note</span></div>
+    <div class="filters" id="filters" aria-label="Тип публичного мероприятия">$filters</div>
+    <div class="calendar-zone">
+      <div class="calendar">
+        <div class="weekday-grid" aria-hidden="true"><span>ПН</span><span>ВТ</span><span>СР</span><span>ЧТ</span><span>ПТ</span><span>СБ</span><span>ВС</span></div>
+        <div id="dayGrid" class="day-grid" role="group" aria-label="Календарные дни">$day_grid</div>
+        <div class="calendar-caption"><span>● цветные точки — публичные события</span><span>закрытые учитываем без подробностей</span></div>
+        <p class="calendar-note" id="calendarNote"$calendar_note_hidden>$calendar_note</p>
+      </div>
+      <div class="day-sheet" aria-live="polite" id="daySheet">
+        <span class="day-label">ВЫБРАННАЯ ДАТА</span>
+        <div class="date-big" id="sheetDate">$sheet_date</div>
+        <div class="date-month" id="sheetMonth">$sheet_month</div>
+        <div id="sheetEvents">$sheet_events</div>
+        <button class="go-list" id="goList" type="button">ВСЕ СОБЫТИЯ ↓</button>
+      </div>
+    </div>
+  </section>
+  <section class="summary-zone" aria-labelledby="summary-title">
+    <div>
+      <h2 class="split-header" id="summary-title">ЧТО <span class="paper yellow">ПРОВОДИЛИ?</span></h2>
+      <div class="breakdown" id="breakdown" aria-label="Публичные события по типам">$breakdown</div>
+    </div>
+    <div>
+      <h2 class="split-header">А <span class="paper news">ЗАКРЫТЫЕ?</span></h2>
+      <div class="hidden-note"><strong id="hiddenCount">$hidden_count</strong> ВНУТРЕННИХ И ЗАКРЫТЫХ СОБЫТИЙ УЧТЕНЫ В ОБЩЕЙ СУММЕ.<br><span class="redline">БЕЗ НАЗВАНИЙ И ДАТ.</span><small>Публичный календарь показывает только открытые события. Внутренние остаются внутренними.</small></div>
+    </div>
+  </section>
+  <section id="journal" aria-labelledby="journal-title">
+    <div class="log-header"><h2 class="log-headtitle" id="journal-title">АФИШИ <span class="paper purple">ПОСЛЕ ФАКТА</span></h2><p class="log-count" id="logCount">$log_count</p></div>
+    <div class="event-log" id="eventLog">$event_log</div>
+    <button class="more" id="more" type="button"$more_hidden>ПОКАЗАТЬ ЕЩЁ ↓</button>
+  </section>
+  <nav class="nav nav-bottom" aria-label="Навигация внизу страницы">$nav</nav>
+  <footer class="foot"><span>РанДом Культуры · а дорог ли РанДом?</span><details><summary>Откуда данные</summary>$foot_details</details></footer>
+</main>
+<dialog class="dialog" id="eventDialog" aria-labelledby="dialogTitle"><button class="dialog-close" id="dialogClose" type="button" aria-label="Закрыть">✕</button><span class="dialog-head" id="dialogWhen">ПУБЛИЧНОЕ СОБЫТИЕ</span><h3 id="dialogTitle"></h3><span class="dialog-type paper news" id="dialogType"></span><p id="dialogText" hidden></p><p id="dialogLink" hidden></p><div class="dialog-info">Закрытые мероприятия сюда не попадают.</div></dialog>
+<script type="application/json" id="events-data">$payload</script>
+<script src="/static/events.js" defer></script>
+</body>
+</html>

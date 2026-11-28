@@ -38,6 +38,18 @@ class TestN01Schema(unittest.TestCase):
         self.assertEqual(("600",), extraction.source_message_ids)
         self.assertTrue(extraction.public_only)
 
+    def test_numeric_message_ids_are_coerced_to_strings(self):
+        extraction = parse_extraction(good_item(message_ids=[1621, "1622"]))
+        self.assertEqual(("1621", "1622"), extraction.source_message_ids)
+
+    def test_boolean_message_ids_are_refused(self):
+        with self.assertRaises(ExtractionInvalid):
+            parse_extraction(good_item(message_ids=[True]))
+
+    def test_float_message_ids_are_refused(self):
+        with self.assertRaises(ExtractionInvalid):
+            parse_extraction(good_item(message_ids=[16.21]))
+
     def test_unknown_fields_are_refused(self):
         with self.assertRaises(ExtractionInvalid):
             parse_extraction(good_item(url="https://invented.example"))
@@ -52,9 +64,13 @@ class TestN01Schema(unittest.TestCase):
         with self.assertRaises(ExtractionInvalid):
             parse_extraction(good_item(public_only=False))
 
-    def test_a_float_confidence_is_refused(self):
+    def test_a_fractional_confidence_is_read_as_a_percentage(self):
+        extraction = parse_extraction(good_item(confidence=0.87))
+        self.assertEqual("87", extraction.confidence)
+
+    def test_a_confidence_above_100_is_refused(self):
         with self.assertRaises(ExtractionInvalid):
-            parse_extraction(good_item(confidence=0.87))
+            parse_extraction(good_item(confidence=142.5))
 
     def test_a_bad_event_date_is_refused(self):
         with self.assertRaises(ExtractionInvalid):
@@ -83,7 +99,7 @@ class TestN01Extraction(unittest.TestCase):
         extractor = NewsExtractor(self.conn, provider=provider, channel_username="random_culture", **kwargs)
         return extractor.run(self.posts, logical_date="2025-07-31"), provider
 
-    def test_news_is_selected_and_an_announcement_is_not(self):
+    def test_news_is_selected_and_an_announcement_is_stored_for_the_ranking(self):
         script = [
             ig.news_response(
                 [
@@ -98,6 +114,13 @@ class TestN01Extraction(unittest.TestCase):
         rows = repo.public_news_items(self.conn)
         self.assertEqual(1, len(rows))
         self.assertEqual("Отремонтировали подвал", rows[0]["title"])
+        announcements = repo.announcement_news_items(self.conn)
+        self.assertEqual(1, len(announcements))
+        self.assertEqual("Скоро лекция", announcements[0]["title"])
+        self.assertEqual("announcement", announcements[0]["classification"])
+        self.assertEqual("llm", announcements[0]["origin"])
+        self.assertEqual(1, announcements[0]["machine_processed"])
+        self.assertEqual(("https://t.me/random_culture/601",), _urls(announcements[0]))
 
     def test_links_are_built_by_the_application(self):
         self.run_extractor([ig.news_response([good_item(message_ids=("600",))])])
@@ -164,6 +187,28 @@ class TestN01Extraction(unittest.TestCase):
     def test_announcements_are_not_stored_as_news(self):
         self.run_extractor([ig.news_response([good_item(classification="announcement")])])
         self.assertEqual((), repo.public_news_items(self.conn))
+
+    def test_an_announcement_survives_a_rerun_and_a_manual_edit_is_preserved(self):
+        response = [ig.news_response([good_item(message_ids=("601",), classification="announcement", title="Скоро лекция")])]
+        first, _ = self.run_extractor(response)
+        self.assertEqual(1, first.announcements)
+        second, _ = self.run_extractor(response)
+        self.assertEqual(1, second.announcements)
+        self.assertEqual(1, len(repo.announcement_news_items(self.conn)))
+        news_id = repo.announcement_news_items(self.conn)[0]["news_id"]
+        repo.set_manual_state(self.conn, news_id=news_id, state="edited")
+        third, _ = self.run_extractor(response)
+        self.assertEqual(0, third.announcements)
+        self.assertIn("manual_edit_preserved", third.issues)
+        self.assertEqual("edited", repo.announcement_news_items(self.conn)[0]["manual_state"])
+
+    def test_other_is_dropped_entirely_and_counted(self):
+        outcome, _ = self.run_extractor([ig.news_response([good_item(classification="other")])])
+        self.assertEqual(1, outcome.other)
+        self.assertEqual(0, outcome.published)
+        self.assertEqual(0, outcome.announcements)
+        self.assertEqual((), repo.public_news_items(self.conn))
+        self.assertEqual((), repo.announcement_news_items(self.conn))
 
 
 def _urls(row):

@@ -45,7 +45,7 @@ from .release_index import ReleaseIndex, overview as release_overview
 from . import reports as reports_module
 
 CSP = (
-    "default-src 'none'; style-src 'self'; img-src 'self' data:; "
+    "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
     "base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
 )
 
@@ -245,6 +245,10 @@ class PublicSite:
             ctype = "image/jpeg"
         elif target.suffix == ".png":
             ctype = "image/png"
+        elif target.suffix == ".webp":
+            ctype = "image/webp"
+        elif target.suffix == ".js":
+            ctype = "text/javascript; charset=utf-8"
         return Response(
             200,
             ctype,
@@ -272,8 +276,7 @@ class PublicSite:
         elif path == "/money":
             return self._html_response(self._money(period, periods))
         elif path == "/events":
-            body, status = self._events(period)
-            title = "Мероприятия"
+            return self._html_response(self._events(period, periods), etag=self._etag_for(period))
         elif path == "/community":
             body, status = self._community(period)
             title = "Сообщество"
@@ -462,10 +465,57 @@ class PublicSite:
                     historical=self.historical_views(period), status=self._status_for(period),
                     photo_url=self._photo_url(), logo_url=self._money_logo_url())
 
-    def _events(self, period: Period) -> tuple[str, str | None]:
+    def _events_photo_url(self) -> str | None:
+        """Адрес фото подвала постера «Мероприятия», когда ассет выложен оператором.
+
+        Тот же контур, что у фото главной: файла нет в git, страницу рисует
+        честное состояние без фотографии, пока ассет не установлен.
+        """
+
+        for name in render.EVENTS_PHOTO_ASSETS:
+            if (self.static_dir / name).is_file():
+                return f"/static/{name}"
+        return None
+
+    def _events_logo_url(self) -> str | None:
+        return f"/static/{render.EVENTS_LOGO}" if (self.static_dir / render.EVENTS_LOGO).is_file() else None
+
+    def _events_month_labels(self, period: Period) -> tuple[str, ...]:
+        """Месяцы с публичным выпуском событий — выбор периода постера."""
+
+        labels = sorted(
+            label for label in self.index.periods()
+            if re.fullmatch(r"[0-9]{4}-[0-9]{2}", label)
+        )
+        if period.label not in labels and len(period.label) == 7:
+            labels.append(period.label)
+            labels.sort()
+        return tuple(labels)
+
+    def _events(self, period: Period, periods: Sequence[str]) -> str:
+        """Утверждённый постер «Мероприятия» на реальных публичных данных."""
+
+        del periods  # выбор периода постера ограничен месяцами с выпуском
+        from .events_owner import page
         release = self.release_for(period)
         events = release.events if release else None
-        return render.events_section(events, period_label=period.label, historical=self.historical_views(period)), None
+        prev_total = self._previous_month_events(period)
+        prev_month = self._previous_month_number(period)
+        return page(
+            period_label=period.label,
+            month_options=self._events_month_labels(period),
+            events=events,
+            prev_total=prev_total,
+            prev_month=prev_month,
+            photo_url=self._events_photo_url(),
+            logo_url=self._events_logo_url(),
+        )
+
+    def _previous_month_number(self, period: Period) -> int | None:
+        if period.kind != MONTH or period.start is None:
+            return None
+        previous = _shift_month(f"{period.start.year:04d}-{period.start.month:02d}", -1)
+        return int(previous[5:7])
 
     def _community(self, period: Period) -> tuple[str, str | None]:
         release = self.release_for(period)

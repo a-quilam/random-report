@@ -103,8 +103,11 @@ def trend(months):
     # The approved sheet draws a dashed 100 % guide above the plot; it only means
     # something when the axis tops out exactly at one hundred percent.
     ceiling_line = '<path d="M20 20H768" stroke="#B8AB9F" stroke-dasharray="4 5" fill="none"/>' if ceiling == 100 else ''
+    # the approved sheet shows only the plot; the month list stays in the
+    # document for assistive technology (and keeps the period links)
     return ('<svg viewBox="-12 -10 820 205" aria-hidden="true"><path d="M20 162H768" stroke="#B8AB9F"/>'
-            + ceiling_line + ''.join(shapes) + '</svg><details><summary>текстовая версия графика</summary><ul>' + ''.join(rows) + '</ul></details>')
+            + ceiling_line + ''.join(shapes) + '</svg><div class="visually-hidden" inert><details><summary>текстовая версия графика</summary><ul>'
+            + ''.join(rows) + '</ul></details></div>')
 
 
 def page(*, period, periods, money, months, status, historical, photo_url, logo_url):

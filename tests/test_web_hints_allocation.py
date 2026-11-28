@@ -313,7 +313,7 @@ class NoLeakTests(ServedReleaseTestCase):
                 with self.subTest(route=route, bucket=bucket):
                     self.assertNotIn(bucket, text)
 
-    def test_the_content_security_policy_is_the_same_and_still_blocks_scripts(self) -> None:
+    def test_the_content_security_policy_is_the_same_and_still_blocks_inline_code(self) -> None:
         for route in ROUTES:
             response = self.site._dispatch(
                 {"REQUEST_METHOD": "GET", "PATH_INFO": route, "QUERY_STRING": f"period={PERIOD}"}
@@ -321,11 +321,20 @@ class NoLeakTests(ServedReleaseTestCase):
             headers = dict(response.headers)
             with self.subTest(route=route):
                 self.assertEqual(CSP, headers["Content-Security-Policy"])
-                self.assertNotIn("script-src", headers["Content-Security-Policy"])
+                # the approved events poster ships its interaction as one static
+                # file: scripts only from self, never inline, never remote
+                self.assertIn("script-src 'self'", headers["Content-Security-Policy"])
                 self.assertNotIn("unsafe-inline", headers["Content-Security-Policy"])
-                self.assertNotIn("<script", response.text)
+                self.assertNotIn("unsafe-eval", headers["Content-Security-Policy"])
+                self.assertNotIn("<script>", response.text)
                 self.assertNotIn("<style", response.text)
                 self.assertNotIn('style="', response.text)
+                for chunk in response.text.split("<script")[1:]:
+                    self.assertTrue(
+                        chunk.startswith(' src="/static/') or chunk.startswith(' type="application/json"'),
+                        f"unexpected script element on {route}: {chunk[:60]!r}",
+                    )
+                    self.assertNotIn("javascript:", chunk.lower())
 
 
 class HintStylesheetTests(ServedReleaseTestCase):

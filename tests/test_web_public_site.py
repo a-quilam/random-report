@@ -166,10 +166,17 @@ class TestEightSections(SiteTestCase):
             with self.subTest(route=route):
                 status, text, _headers = self.fixture.get(route, f"period={PERIOD}")
                 self.assertEqual(status, 200)
-                main_id = 'id="main"' if route == "/money" else 'id="content"'
-                skip_anchor = "#main" if route == "/money" else "#content"
-                self.assertIn(f'<main {main_id}', text)
-                self.assertIn(f'<a class="skip" href="{skip_anchor}">', text)
+                if route == "/events":
+                    # the owner-approved events poster keeps its own landmarks:
+                    # `#top` main and the prototype's visually-hidden skip link
+                    self.assertIn('<main class="page" id="top">', text)
+                    self.assertIn('<a class="sr" href="#calendar">', text)
+                elif route == "/money":
+                    self.assertIn('<main id="main"', text)
+                    self.assertIn('<a class="skip" href="#main">', text)
+                else:
+                    self.assertIn('<main id="content"', text)
+                    self.assertIn('<a class="skip" href="#content">', text)
                 self.assertIn('lang="ru"', text)
                 self.assertIn('name="viewport"', text)
                 self.assertNotIn("password", text.lower())
@@ -201,9 +208,13 @@ class TestEightSections(SiteTestCase):
         events_status, events_text, _h = self.fixture.get("/events", f"period={PERIOD}")
         self.assertEqual(events_status, 200)
         self.assertIn('aria-current="page"', events_text)
-        self.assertIn('aria-label="Выбор периода"', events_text)
-        self.assertIn('scope="col"', events_text)
-        self.assertIn("sr-only", events_text)  # weekday names for the calendar header
+        # the poster has no tables; its keyboard story is the mock's own markup:
+        # selectable day buttons, a labelled month select, hidden weekday row
+        self.assertIn('aria-label="Выбрать месяц"', events_text)
+        self.assertIn('<div class="weekday-grid" aria-hidden="true">', events_text)
+        self.assertIn('aria-live="polite"', events_text)
+        self.assertIn('class="sr"', events_text)  # visually hidden skip link
+        self.assertIn("dialog", events_text)
 
     def test_empty_and_unknown_states_are_explicit(self) -> None:
         text = self.fixture.plain("/money", "period=2024-03")
@@ -595,7 +606,7 @@ class TestReleaseIndex(SiteTestCase):
             with self.subTest(route=route):
                 response = site._dispatch({"REQUEST_METHOD": "GET", "PATH_INFO": route, "QUERY_STRING": ""})
                 self.assertEqual(response.status, 200)
-                self.assertIn("нет данных", response.text)
+                self.assertIn("нет данных", response.text.lower())
 
 
 # --------------------------------------------------------------------------- #

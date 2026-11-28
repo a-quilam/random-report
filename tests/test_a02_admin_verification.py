@@ -31,7 +31,8 @@ class DeskTestCase(unittest.TestCase):
         return str(self.conn.execute("SELECT transaction_id FROM finance_transactions WHERE deleted = 0 ORDER BY transaction_id").fetchone()["transaction_id"])
 
     def _news(self) -> str:
-        return str(self.conn.execute("SELECT news_id FROM news_items LIMIT 1").fetchone()["news_id"])
+        # the chronicle item; the pipeline also stores announcement rows now
+        return str(self.conn.execute("SELECT news_id FROM news_items WHERE classification = 'news' LIMIT 1").fetchone()["news_id"])
 
 
 class EqualAccessTests(DeskTestCase):
@@ -207,7 +208,7 @@ class NewsModerationTests(DeskTestCase):
         self.assertIn("news.restored", actions)
 
     def test_merge_folds_source_messages_and_hides_the_absorbed_item(self) -> None:
-        items = self.conn.execute("SELECT * FROM news_items").fetchall()
+        items = self.conn.execute("SELECT * FROM news_items WHERE classification = 'news'").fetchall()
         self.assertEqual(len(items), 1)
         row = items[0]
         from datetime import date
@@ -258,7 +259,7 @@ class NewsModerationTests(DeskTestCase):
         self.assertEqual(after["manual_state"], news.EDITED)
 
     def test_re_extraction_duplicate_is_deduplicated_after_a_merge(self) -> None:
-        items = self.conn.execute("SELECT * FROM news_items").fetchall()
+        items = self.conn.execute("SELECT * FROM news_items WHERE classification = 'news'").fetchall()
         row = items[0]
         from randreport.news.models import NewsItem
         from randreport.store import repository as repo

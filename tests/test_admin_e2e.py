@@ -199,7 +199,7 @@ class EndToEndTests(unittest.TestCase):
         self.assertIn("чужого источника", body)
 
         # 5. edit the chronicle news and hide the announcement-like duplicate
-        news_id = str(conn.execute("SELECT news_id FROM news_items LIMIT 1").fetchone()["news_id"])
+        news_id = str(conn.execute("SELECT news_id FROM news_items WHERE classification = 'news' LIMIT 1").fetchone()["news_id"])
         status, _headers, body = desk.request(
             "POST",
             "/admin/actions/news/edit",

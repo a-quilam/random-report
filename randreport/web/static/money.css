@@ -71,11 +71,12 @@ img.brand-star{width:52px;height:auto;left:-49px}.period-plate{position:static;j
 .period-plate select:hover{background:#DCC5A7}
 .period-plate select:focus-visible{outline:2px solid #AA74BA;outline-offset:3px}
 .period-date{display:inline!important;white-space:nowrap;max-width:260px;line-height:1.35;color:#8E342D;font:bold 10px/1.25 'Courier New',monospace;letter-spacing:.04em}
-/* The public sheet ships without scripts (style-src/deny-all CSP), so the GET
-   form keeps a real submit button; at rest it stays out of the approved
-   composition and appears only when keyboard focus reaches it. */
-.period-plate button{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap;margin:0;padding:0;border:0}
-.period-plate button:focus-visible{position:static;width:auto;height:auto;clip-path:none;background:#E6D6C0;color:#28221f;border-bottom:3px solid #37261D;padding:9px 13px;font:900 12px/1.2 'Courier New',monospace}
+/* The public sheet ships without scripts (deny-all CSP), so the GET form keeps
+   a real, always-visible submit button styled as part of the paper ticket —
+   on a phone there is no keyboard to reveal a hidden one. */
+.period-plate button{background:#E6D6C0;color:#28221f;border:0;border-bottom:3px solid #37261D;border-radius:0;padding:9px 14px;font:900 12px/1.2 'Courier New',monospace;letter-spacing:.05em;cursor:pointer}
+.period-plate button:hover{background:#DCC5A7}
+.period-plate button:focus-visible{outline:2px solid #AA74BA;outline-offset:3px}
 .hero{margin-top:7px}
 .hero-head{min-height:175px}
 .hero-core{margin-top:13px}
@@ -128,7 +129,8 @@ img.brand-star{width:52px;height:auto;left:-49px}.period-plate{position:static;j
  .edition{font-size:9px;margin-top:8px}
  .period-plate{gap:8px;justify-content:flex-start;margin-top:5px;font-size:9px}
  .period-plate select{min-width:165px;font-size:13px;padding:9px 32px 8px 10px}
- .period-date{flex-basis:100%;margin-left:0;font-size:9px}
+ /* the date shares its row with the submit button so the ticket stays two rows */
+ .period-date{flex-basis:auto;margin-left:0;font-size:9px;align-self:center}
  .hero{margin-top:18px}
  .hero-head{min-height:134px}
  .hero-core{margin-top:10px}
@@ -148,6 +150,12 @@ img.brand-star{width:52px;height:auto;left:-49px}.period-plate{position:static;j
  .trend-graph svg{width:100%;max-height:none}
 }
 @media (prefers-reduced-motion: reduce){.nav .nav-slip{transition:none!important}}
+/* on small sheets the mock lets the stamp sit below the bar, not overlap it */
+@media (max-width:540px){.coverage-stamp{margin:0 0 0 36%}}
+/* The owner's ledger: the value column takes only its content width (mock's
+   auto), so long labels keep their two-line rhythm instead of wrapping three. */
+.cat-row{grid-template-columns:minmax(0,1fr) auto}
+.coverage-stamp{margin:-10px 0 0 36%}
 /* The owner's sheet keeps the ledger rows tight: the «?» hint mark rides with
    the label, the incoming-explainer is a small circle, no tall touch plates. */
 .cat-row .hint-disclosure{display:inline-block;vertical-align:top;margin:3px 0 0 6px}

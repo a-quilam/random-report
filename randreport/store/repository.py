@@ -805,6 +805,24 @@ def find_news_for_sources(conn: sqlite3.Connection, message_ids: Sequence[str]) 
 
 
 # --------------------------------------------------------------------------- #
+# Deferred LLM jobs (written by the extractor, retried at news-sync start)
+# --------------------------------------------------------------------------- #
+
+def deferred_jobs_list(conn: sqlite3.Connection) -> tuple[dict[str, Any], ...]:
+    """Pending deferred jobs, oldest first — the order the consumer retries."""
+
+    rows = conn.execute("SELECT * FROM deferred_jobs ORDER BY created_at, job_id").fetchall()
+    return tuple(dict(row) for row in rows)
+
+
+def deferred_jobs_delete(conn: sqlite3.Connection, job_id: str) -> None:
+    """Clear a deferred job once its batch went through (or has nothing left)."""
+
+    with transaction(conn):
+        conn.execute("DELETE FROM deferred_jobs WHERE job_id = ?", (job_id,))
+
+
+# --------------------------------------------------------------------------- #
 # Runs, last-good payloads, releases, issues
 # --------------------------------------------------------------------------- #
 

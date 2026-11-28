@@ -21,6 +21,7 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Sequence
 from wsgiref.simple_server import WSGIRequestHandler, WSGIServer, make_server
 
 from randreport.connectors.telegram import TelegramClient
@@ -747,6 +748,165 @@ class TestLlmAdapter(WebhookTestCase):
         with self.assertRaises(LlmRateLimited):
             provider.complete(system="s", prompt="p", timeout_s=1)
         self.assertNotIn("synthetic-key-1234", repr(provider))
+
+
+class TestDeferredJobsConsumer(WebhookTestCase):
+    """Option (б): deferred LLM batches are retried at news-sync start.
+
+    The extractor writes one ``deferred_jobs`` row per batch it could not run
+    (rate limit, exhausted budget); the sync reads them back, re-runs the batch
+    under the original logical date and clears the row on success.  The night
+    cursor belongs to the regular pending pass and is not moved by a retry.
+    """
+
+    def seed_row(
+        self, *, job_id: str, ids: Sequence[str], reason: str = "rate_limited",
+        created_at: str = "2025-07-31T00:00:00+00:00",
+    ) -> None:
+        self.conn.execute(
+            "INSERT INTO deferred_jobs (job_id, kind, payload, reason, created_at) VALUES (?, ?, ?, ?, ?)",
+            (job_id, "news_extraction", json.dumps(list(ids)), reason, created_at),
+        )
+        self.conn.commit()
+
+    def test_a_successful_retry_clears_the_row_and_keeps_the_cursor(self):
+        answer = json.dumps({"items": [ig.news_item(message_ids=("600",), title="Отложенные новости")]})
+        extractor = ig.extractor(self.conn, script=[answer], max_calls_per_date=5)
+        adapter = ig.news_adapter(extractor)
+        self.seed_row(job_id="news_2025-07-30", ids=["600"])
+        repo.upsert_posts(self.conn, [ig.post("600", "Пост из отложенной партии.")])
+
+        outcome = adapter.sync(conn=self.conn, cutoff=ig.NOW, logical_date="2025-08-01", cursor="600")
+
+        rows = self.conn.execute("SELECT * FROM deferred_jobs").fetchall()
+        self.assertEqual([], rows)
+        self.assertEqual(1, len(getattr(extractor.provider, "calls", [])))
+        self.assertEqual(1, self.conn.execute("SELECT COUNT(*) AS n FROM news_items").fetchone()["n"])
+        # the retry is charged to the deferred day, not to tonight's date
+        ledger = self.conn.execute("SELECT logical_date FROM llm_budget_ledger").fetchone()
+        self.assertEqual("2025-07-30", ledger["logical_date"])
+        # the night cursor belongs to the pending pass: nothing newer was seen
+        self.assertEqual("600", outcome.cursor)
+        self.assertEqual(1, outcome.payload["deferred_jobs_retried"])
+        self.assertEqual(1, outcome.payload["deferred_jobs_cleared"])
+        self.assertEqual(1, outcome.payload["posts"])
+
+    def test_a_retry_that_is_rate_limited_again_leaves_the_row(self):
+        extractor = ig.extractor(self.conn, script=[LlmRateLimited("429")], max_calls_per_date=5)
+        adapter = ig.news_adapter(extractor)
+        self.seed_row(job_id="news_2025-07-30", ids=["600"])
+        repo.upsert_posts(self.conn, [ig.post("600", "Пост.")])
+
+        outcome = adapter.sync(conn=self.conn, cutoff=ig.NOW, logical_date="2025-08-01", cursor="600")
+
+        deferred = self.conn.execute("SELECT job_id, reason FROM deferred_jobs").fetchall()
+        self.assertEqual(["news_2025-07-30"], [row["job_id"] for row in deferred])
+        self.assertEqual(["rate_limited"], [row["reason"] for row in deferred])
+        self.assertTrue(outcome.payload["deferred"])  # the retry's deferral is honest coverage
+        self.assertEqual(1, outcome.payload["deferred_jobs_retried"])
+        self.assertEqual(0, outcome.payload["deferred_jobs_cleared"])
+
+    def test_a_row_without_any_live_post_is_cleared_without_a_provider_call(self):
+        extractor = ig.extractor(self.conn, script=[], max_calls_per_date=5)
+        adapter = ig.news_adapter(extractor)
+        self.seed_row(job_id="news_2025-07-30", ids=["600"])
+        repo.upsert_posts(self.conn, [ig.post("600", "Пост.", deleted=True)])
+
+        outcome = adapter.sync(conn=self.conn, cutoff=ig.NOW, logical_date="2025-08-01", cursor="600")
+
+        rows = self.conn.execute("SELECT * FROM deferred_jobs").fetchall()
+        self.assertEqual([], rows)
+        self.assertEqual([], getattr(extractor.provider, "calls", []))  # nothing left to extract
+        self.assertEqual(0, outcome.payload["deferred_jobs_retried"])
+        self.assertEqual(1, outcome.payload["deferred_jobs_cleared"])
+
+    def test_without_a_provider_nothing_is_retried_and_nothing_is_cleared(self):
+        extractor = NewsExtractor(self.conn, provider=None, channel_username="random_culture")
+        adapter = ig.news_adapter(extractor)
+        self.seed_row(job_id="news_2025-07-30", ids=["600"])
+        repo.upsert_posts(self.conn, [ig.post("600", "Пост.")])
+
+        outcome = adapter.sync(conn=self.conn, cutoff=ig.NOW, logical_date="2025-08-01", cursor="600")
+
+        deferred = self.conn.execute("SELECT job_id FROM deferred_jobs").fetchall()
+        self.assertEqual(["news_2025-07-30"], [row["job_id"] for row in deferred])
+        self.assertEqual(0, outcome.payload["deferred_jobs_retried"])
+
+    def test_posts_deleted_since_the_deferral_are_dropped_from_the_retry(self):
+        answer = json.dumps({"items": [ig.news_item(message_ids=("600",), title="Оставшиеся новости")]})
+        extractor = ig.extractor(self.conn, script=[answer], max_calls_per_date=5)
+        adapter = ig.news_adapter(extractor)
+        self.seed_row(job_id="news_2025-07-30", ids=["600", "601"])
+        repo.upsert_posts(self.conn, [
+            ig.post("600", "Пост из отложенной партии."),
+            ig.post("601", "Удалённый пост.", deleted=True),
+        ])
+
+        outcome = adapter.sync(conn=self.conn, cutoff=ig.NOW, logical_date="2025-08-01", cursor="601")
+
+        rows = self.conn.execute("SELECT * FROM deferred_jobs").fetchall()
+        self.assertEqual([], rows)
+        self.assertEqual(1, len(getattr(extractor.provider, "calls", [])))
+        prompt = extractor.provider.calls[0]["prompt"]
+        self.assertIn("Пост из отложенной партии.", prompt)
+        self.assertNotIn("Удалённый пост.", prompt)
+        self.assertEqual(1, outcome.payload["deferred_jobs_retried"])
+        self.assertEqual(1, outcome.payload["deferred_jobs_cleared"])
+
+    def test_an_exhausted_budget_bounds_the_retry_loop_and_defers_again(self):
+        # no attempt counter and no TTL: the loop is bounded by the budget gate
+        extractor = ig.extractor(self.conn, script=[], max_calls_per_date=0)
+        adapter = ig.news_adapter(extractor)
+        self.seed_row(job_id="news_2025-07-30", ids=["600"])
+        repo.upsert_posts(self.conn, [ig.post("600", "Пост.")])
+
+        outcome = adapter.sync(conn=self.conn, cutoff=ig.NOW, logical_date="2025-08-01", cursor="600")
+
+        deferred = self.conn.execute("SELECT job_id, reason FROM deferred_jobs").fetchall()
+        self.assertEqual(["news_2025-07-30"], [row["job_id"] for row in deferred])
+        self.assertEqual(["budget_exceeded"], [row["reason"] for row in deferred])
+        self.assertEqual([], getattr(extractor.provider, "calls", []))  # the gate fires before any request
+        self.assertTrue(outcome.payload["deferred"])
+        self.assertEqual(1, outcome.payload["deferred_jobs_retried"])
+        self.assertEqual(0, outcome.payload["deferred_jobs_cleared"])
+
+    def test_an_old_row_is_still_consumed_there_is_no_ttl(self):
+        first = json.dumps({"items": [ig.news_item(message_ids=("500",), title="Старая партия")]})
+        second = json.dumps({"items": [ig.news_item(message_ids=("600",), title="Свежая партия")]})
+        extractor = ig.extractor(self.conn, script=[first, second], max_calls_per_date=5)
+        adapter = ig.news_adapter(extractor)
+        self.seed_row(job_id="news_2025-07-29", ids=["500"], created_at="2020-01-01T00:00:00+00:00")
+        self.seed_row(job_id="news_2025-07-30", ids=["600"])
+        repo.upsert_posts(self.conn, [ig.post("500", "Старый пост."), ig.post("600", "Свежий пост.")])
+
+        outcome = adapter.sync(conn=self.conn, cutoff=ig.NOW, logical_date="2025-08-01", cursor="600")
+
+        # a row of any age is consumed, never silently dropped: no row stays
+        # "forever" without a consumer (the acceptance clause of DECISIONS.md)
+        self.assertEqual([], self.conn.execute("SELECT * FROM deferred_jobs").fetchall())
+        prompts = [call["prompt"] for call in extractor.provider.calls]
+        self.assertIn("Старый пост.", prompts[0])
+        self.assertNotIn("Свежий пост.", prompts[0])  # oldest batch first
+        self.assertEqual(2, outcome.payload["deferred_jobs_retried"])
+        self.assertEqual(2, outcome.payload["deferred_jobs_cleared"])
+
+    def test_the_prod_orphan_row_is_consumed_by_a_plain_sync_without_a_migration(self):
+        # the exact shape of the row the deploy inherited (prod, 28.11.2026):
+        # job_id news_2026-11-28, reason rate_limited, payload ["4", "1622"]
+        answer = json.dumps({"items": [ig.news_item(message_ids=("4", "1622"), title="Партия 28 ноября")]})
+        extractor = ig.extractor(self.conn, script=[answer], max_calls_per_date=5)
+        adapter = ig.news_adapter(extractor)
+        self.seed_row(job_id="news_2026-11-28", ids=["4", "1622"])
+        repo.upsert_posts(self.conn, [ig.post("4", "Первый пост партии."), ig.post("1622", "Второй пост партии.")])
+
+        outcome = adapter.sync(conn=self.conn, cutoff=ig.NOW, logical_date="2025-08-01", cursor="1622")
+
+        self.assertEqual([], self.conn.execute("SELECT * FROM deferred_jobs").fetchall())
+        ledger = self.conn.execute("SELECT logical_date FROM llm_budget_ledger").fetchall()
+        self.assertEqual(["2026-11-28"], [row["logical_date"] for row in ledger])  # charged to the deferred day
+        self.assertEqual(2, outcome.payload["posts"])
+        self.assertEqual(1, outcome.payload["deferred_jobs_retried"])
+        self.assertEqual(1, outcome.payload["deferred_jobs_cleared"])
 
 
 class TestSnapshotApartFromHistory(WebhookTestCase):
