@@ -18,6 +18,7 @@ desk edit is never overwritten by a nightly run.
     python -m randreport.ops.cli verify-backup --backup BACKUP.sqlite
     python -m randreport.ops.cli prune-backups --out BACKUP_DIR [--keep-daily 14 --keep-monthly 1]
     python -m randreport.ops.cli rollback --publish-dir DIR (--to REL_ID | --previous)
+    python -m randreport.ops.cli reconcile --period YYYY-MM[,YYYY...] [--publish-dir DIR]
 
 Without ``--period`` the cycle publishes every whole period that has data, the
 current (still unfinished) month and the matching years — the year aggregate is
@@ -25,6 +26,14 @@ always the ratio of the year's sums, never the mean of monthly percentages.
 
 Exit codes: 0 published, 2 at least one source failed, 3 another run holds the
 lease, 4 no source was configured, 5 the database or the mapping is unusable.
+
+``reconcile`` is a separate, read-only operator action: it opens the private
+store without migrating or writing, reuses the frozen domain to recompute the
+approved totals of the requested periods, and reports aggregate divergences plus
+the reasons the figures are provisional. It prints aggregates and public
+category keys only - never an operation, a transaction id or an account id.
+Exit codes: 0 reconciled without an error, 1 an error-severity divergence, 2 a
+bad period, 5 the store cannot be read.
 """
 
 from __future__ import annotations
@@ -42,6 +51,7 @@ from .. import leakguard
 from ..connectors.teamup import DEFAULT_BASE_URL as TEAMUP_DEFAULT_BASE_URL
 from ..connectors.teamup import TeamupClient
 from ..connectors.telegram import DEFAULT_BASE_URL as TELEGRAM_DEFAULT_BASE_URL
+from ..connectors import telethon_stats
 from ..connectors.telegram import MTProtoHistorySource, TelegramClient
 from ..connectors.transport import UrllibTransport
 from ..connectors.zenmoney import ZenmoneyClient
@@ -63,6 +73,7 @@ from .run import (
     RunInProgress,
     SourceAdapter,
     TelegramAdapter,
+    TelegramStatsAdapter,
     TeamupAdapter,
     ZenmoneyAdapter,
 )
@@ -185,6 +196,16 @@ def build_adapters(conn: Any, *, logical_date: str, policy: Any = None) -> tuple
             notes.append("news: no LLM provider configured; the chronicle is published with an explicit gap")
     else:
         notes.append("news: not configured (TELEGRAM_PUBLIC_CHANNEL missing)")
+
+    # Forwarding counters (MTProto via a bot login, Telethon 1.x). The credential
+    # names are checked, never their values: a machine without the secrets simply
+    # keeps the honest empty ranking, as before.
+    try:
+        stats_config = telethon_stats.resolve_config()
+    except telethon_stats.StatsConfigError as exc:
+        notes.append(f"telegram_stats: not configured ({exc})")
+    else:
+        adapters.append(TelegramStatsAdapter(telethon_stats.TelethonForwardReader(stats_config)))
 
     return adapters, notes, extractor
 
@@ -310,6 +331,58 @@ def _rollback(args: argparse.Namespace) -> int:
     return 0 if report["verified"] else 2
 
 
+def _reconcile(args: argparse.Namespace) -> int:
+    """Read-only operator reconciliation of the approved totals (ops.reconcile).
+
+    The store is opened ``mode=ro`` and is never migrated or written; the periods
+    are required (an operator reconciles named periods, not an implicit set), and
+    the output is aggregate-only: public metric names, public category keys and
+    the provisionality labels.
+    """
+
+    from .reconcile import ReconcileError, open_store, reconcile
+
+    requested = [spec for spec in (args.period or "").split(",") if spec.strip()]
+    if not requested:
+        print("reconcile needs --period YYYY-MM[,YYYY...]", file=sys.stderr)
+        return 2
+    try:
+        periods = [parse_period(spec.strip()) for spec in requested]
+    except ValueError as exc:
+        print(f"unsupported period: {exc}", file=sys.stderr)
+        return 2
+
+    try:
+        conn = open_store(args.db)
+    except ReconcileError as exc:
+        print(f"reconcile refused: {exc}", file=sys.stderr)
+        return 5
+    try:
+        reports = [
+            reconcile(conn, period=period, release_dir=args.publish_dir).to_public()
+            for period in periods
+        ]
+    except ReconcileError as exc:  # pragma: no cover - defensive; open_store is the gate
+        print(f"reconcile refused: {exc}", file=sys.stderr)
+        return 5
+    except (FileNotFoundError, ValueError) as exc:
+        # an unusable mapping is an operator error, never a payload dump
+        print(f"cannot load the finance policy: {exc}", file=sys.stderr)
+        return 5
+    finally:
+        conn.close()
+
+    divergences = [d for report in reports for d in report["divergences"]]
+    print(
+        json.dumps(
+            {"periods": reports, "divergence_count": len(divergences)},
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
+    return 1 if any(d["severity"] == "error" for d in divergences) else 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     # the nightly cycle checks, before it exits, that it left no SQLite handle,
     # listening socket or HTTP response open (see randreport/leakguard.py)
@@ -327,8 +400,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             "import-news",
             "webhook",
             "getupdates",
+            "forwards",
             "prune-backups",
             "rollback",
+            "reconcile",
         ],
     )
     parser.add_argument(
@@ -365,6 +440,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="сколько обновлений забрать за один getUpdates (action=getupdates)",
     )
     parser.add_argument(
+        "--window-days",
+        type=int,
+        default=30,
+        help="ширина скользящего окна измерения пересылок в днях (action=forwards)",
+    )
+    parser.add_argument(
         "--encrypt",
         action="store_true",
         help="записать резервную копию зашифрованной (пароль из RANREPORT_BACKUP_PASSPHRASE)",
@@ -377,6 +458,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.action == "rollback":
         return _rollback(args)
+    if args.action == "reconcile":
+        return _reconcile(args)
     if args.action in ("backup", "restore", "verify-backup", "prune-backups"):
         return _maintenance(args)
 
@@ -388,6 +471,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _run_webhook(args)
     if args.action == "getupdates":
         return _run_getupdates(args)
+    if args.action == "forwards":
+        return _run_forwards(args)
     return _run_nightly(args)
 
 
@@ -399,7 +484,7 @@ def _run_status(args: argparse.Namespace) -> int:
         print(f"cannot open the database at {args.db}", file=sys.stderr)
         return 5
     try:
-        for source in ("zenmoney", "teamup", "telegram", INBOX_SOURCE, "news"):
+        for source in ("zenmoney", "teamup", "telegram", INBOX_SOURCE, "news", "telegram_stats"):
             status = source_status(conn, source)
             print(json.dumps(status.__dict__, ensure_ascii=False, sort_keys=True))
         print(json.dumps({"source": "inbox_counts", **inbox_counts(conn)}, ensure_ascii=False, sort_keys=True))
@@ -531,6 +616,47 @@ def _run_getupdates(args: argparse.Namespace) -> int:
         conn.close()
     print(json.dumps(report.as_dict(), ensure_ascii=False, sort_keys=True))
     return 0
+
+
+def _run_forwards(args: argparse.Namespace) -> int:
+    """One manual measurement pass of the Telegram forwarding counters.
+
+    The same adapter the nightly cycle uses; the ids come from the archive's
+    rolling window (``--window-days``, 30 by default).  The output is aggregate
+    counts only — no counter value per post, no credential, nothing a secret
+    could ride on.  Exit codes: 0 measured, 2 not configured or unavailable.
+    """
+
+    if args.window_days < 1:
+        print("--window-days must be positive", file=sys.stderr)
+        return 2
+    conn = _open_db(args.db)
+    if conn is None:
+        print(f"cannot open the database at {args.db}", file=sys.stderr)
+        return 5
+    try:
+        try:
+            config = telethon_stats.resolve_config()
+        except telethon_stats.StatsConfigError as exc:
+            print(f"telegram_stats: not configured ({exc})", file=sys.stderr)
+            return 2
+        adapter = TelegramStatsAdapter(
+            telethon_stats.TelethonForwardReader(config), window_days=args.window_days
+        )
+        try:
+            outcome = adapter.sync(
+                conn=conn,
+                cutoff=datetime.now(timezone.utc),
+                logical_date=logical_date_for(datetime.now(timezone.utc)),
+                cursor=None,
+            )
+        except telethon_stats.StatsUnavailable as exc:
+            print(f"telegram_stats: unavailable ({exc})", file=sys.stderr)
+            return 2
+        print(json.dumps({"source": adapter.name, **outcome.payload}, ensure_ascii=False, sort_keys=True))
+        return 0 if outcome.status == "ok" else 2
+    finally:
+        conn.close()
 
 
 def _run_nightly(args: argparse.Namespace) -> int:

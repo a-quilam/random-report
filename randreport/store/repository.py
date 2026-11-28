@@ -544,14 +544,15 @@ def upsert_posts(conn: sqlite3.Connection, posts: Iterable[Any], *, now: str | N
             conn.execute(
                 """
                 INSERT INTO public_message_archive (
-                    message_id, channel_id, posted_at, edited_at, text, source_deleted, revision, received_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    message_id, channel_id, posted_at, edited_at, text, source_deleted, revision, received_at, media_album_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT (message_id) DO UPDATE SET
                     text = excluded.text,
                     edited_at = excluded.edited_at,
                     source_deleted = excluded.source_deleted,
                     revision = excluded.revision,
-                    received_at = excluded.received_at
+                    received_at = excluded.received_at,
+                    media_album_id = COALESCE(excluded.media_album_id, media_album_id)
                 """,
                 (
                     post.message_id,
@@ -562,6 +563,7 @@ def upsert_posts(conn: sqlite3.Connection, posts: Iterable[Any], *, now: str | N
                     int(getattr(post, "deleted", False)),
                     int(getattr(post, "revision", 1)),
                     stamp,
+                    getattr(post, "media_album_id", None),
                 ),
             )
         if row is None:
@@ -587,9 +589,81 @@ def archived_posts(conn: sqlite3.Connection, *, include_deleted: bool = False) -
             edited_at=None if row["edited_at"] is None else datetime.fromisoformat(row["edited_at"]),
             revision=int(row["revision"]),
             deleted=bool(row["source_deleted"]),
+            media_album_id=row["media_album_id"],
         )
         for row in rows
     )
+
+
+# --------------------------------------------------------------------------- #
+# Forwarding counters (MTProto)                                               #
+# --------------------------------------------------------------------------- #
+
+def upsert_post_counters(
+    conn: sqlite3.Connection,
+    counters: Iterable[Any],
+    *,
+    now: str | None = None,
+) -> UpsertCounts:
+    """Store measured forwards/views for archived posts.
+
+    One row per message id; a re-measurement overwrites the numbers and the
+    ``fetched_at`` stamp.  A post the reader could not answer this pass is simply
+    not written, so its previously measured values survive untouched — an unknown
+    is never demoted to a zero.
+    """
+
+    stamp = now or _utcnow()
+    new = changed = unchanged = 0
+    for row in counters:
+        forwards = None if row.forwards is None else int(row.forwards)
+        views = None if row.views is None else int(row.views)
+        existing = conn.execute(
+            "SELECT forwards, views FROM post_forward_stats WHERE message_id = ?", (row.message_id,)
+        ).fetchone()
+        if existing is not None and existing["forwards"] == forwards and existing["views"] == views:
+            # the numbers repeat: keep the row, refresh the measurement stamp
+            with transaction(conn):
+                conn.execute(
+                    "UPDATE post_forward_stats SET fetched_at = ? WHERE message_id = ?",
+                    (stamp, row.message_id),
+                )
+            unchanged += 1
+            continue
+        with transaction(conn):
+            conn.execute(
+                """
+                INSERT INTO post_forward_stats (message_id, forwards, views, fetched_at, channel_id)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT (message_id) DO UPDATE SET
+                    forwards = excluded.forwards,
+                    views = excluded.views,
+                    fetched_at = excluded.fetched_at,
+                    channel_id = excluded.channel_id
+                """,
+                (row.message_id, forwards, views, stamp, row.channel_id),
+            )
+        if existing is None:
+            new += 1
+        else:
+            changed += 1
+    return UpsertCounts(new=new, changed=changed, unchanged=unchanged)
+
+
+def post_counter_rows(conn: sqlite3.Connection) -> tuple[dict[str, Any], ...]:
+    """All stored counter rows, oldest first (``forwards`` NULL = never measured)."""
+
+    rows = conn.execute(
+        "SELECT message_id, forwards, views, fetched_at, channel_id FROM post_forward_stats ORDER BY fetched_at"
+    ).fetchall()
+    return tuple(dict(row) for row in rows)
+
+
+def latest_counter_fetch(conn: sqlite3.Connection) -> str | None:
+    """The newest successful measurement stamp across stored counters, or ``None``."""
+
+    row = conn.execute("SELECT MAX(fetched_at) AS latest FROM post_forward_stats").fetchone()
+    return row["latest"] if row is not None else None
 
 
 # --------------------------------------------------------------------------- #
@@ -682,6 +756,26 @@ def public_news_items(conn: sqlite3.Connection) -> tuple[dict[str, Any], ...]:
         """
         SELECT * FROM news_items
          WHERE classification = 'news'
+           AND source_deleted = 0
+           AND manual_state != 'hidden'
+         ORDER BY published_on, news_id
+        """
+    ).fetchall()
+    return tuple(dict(row) for row in rows)
+
+
+def announcement_news_items(conn: sqlite3.Connection) -> tuple[dict[str, Any], ...]:
+    """Public announcement items for the «Что пересылали» ranking.
+
+    Same visibility contract as :func:`public_news_items` (not deleted, not
+    hidden), but for the ``announcement`` classification the LLM/manual desk
+    already produced — the ranking never re-classifies a post on its own.
+    """
+
+    rows = conn.execute(
+        """
+        SELECT * FROM news_items
+         WHERE classification = 'announcement'
            AND source_deleted = 0
            AND manual_state != 'hidden'
          ORDER BY published_on, news_id

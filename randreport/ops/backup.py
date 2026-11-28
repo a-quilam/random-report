@@ -287,7 +287,15 @@ def backup_database(
     dst_path.parent.mkdir(parents=True, exist_ok=True)
 
     descriptor: dict[str, Any]
-    with tempfile.TemporaryDirectory(prefix="randreport-backup-") as work:
+    # The plaintext copy is staged *next to the target*, on the same
+    # filesystem: the final step is an atomic os.replace, and rename(2)
+    # cannot cross filesystems -- with TMPDIR on a separate device (often
+    # tmpfs) a staging directory there made every backup fail with
+    # "Invalid cross-device link". mkdtemp creates a 0700 directory, so the
+    # plaintext is exactly as private as under TMPDIR, and whatever is left
+    # of it is removed with the directory below.
+    work = tempfile.mkdtemp(prefix="randreport-backup-", dir=dst_path.parent)
+    try:
         plain_path = Path(work) / "randreport.sqlite"
         descriptor = _write_consistent_copy(src_path, plain_path)
         if encrypted:
@@ -295,7 +303,8 @@ def backup_database(
             encrypt_file(plain_path, dst_path, passphrase=passphrase)
         else:
             os.replace(plain_path, dst_path)
-        # the whole temp dir, including a plaintext copy, is removed with it
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
 
     manifest = {
         "created_at": (now or datetime.now(timezone.utc)).isoformat(),

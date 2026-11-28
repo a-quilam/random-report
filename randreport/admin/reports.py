@@ -26,6 +26,7 @@ from decimal import Decimal
 from typing import Any, Mapping, Sequence
 
 from .. import history
+from ..domain.money import format_percent
 from ..domain.timeframes import Period, parse_period, range_period
 from ..store import repository as repo
 from ..store.db import transaction
@@ -188,10 +189,17 @@ def _display(amount: Any, unit: str) -> str:
 
 
 def _coverage_display(receipts: Any, expenses: Any) -> str:
+    """Покрытие в том же русском виде, что и на публичном листке.
+
+    Раньше здесь была своя замена точки на запятую; теперь число оформляет единый
+    форматтер `money.format_percent` (docs/PERCENT_FORMAT.md), а само отношение
+    считает `history.coverage_percent` — та же арифметика, что и до правки.
+    """
+
     if not isinstance(receipts, int) or not isinstance(expenses, int) or expenses == 0:
         return "не применимо"
-    percent = (Decimal(receipts) * Decimal(100) / Decimal(expenses)).quantize(Decimal("0.1"))
-    return f"{str(percent).replace('.', ',')} %"
+    rendered = format_percent(history.coverage_percent(receipts, expenses))
+    return "не применимо" if rendered is None else f"{rendered} %"
 
 
 def _with_display(payload: Mapping[str, Any]) -> dict[str, Any]:

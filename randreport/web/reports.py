@@ -25,6 +25,7 @@ from typing import Any, Mapping, Sequence
 
 from .. import history
 from ..store import repository as repo
+from . import render
 
 PUBLISHED = "published"
 RECOMPUTED = "recomputed"
@@ -63,10 +64,15 @@ def _fmt_rub(value: int | None) -> str:
 
 
 def _coverage_text(receipts: int | None, expenses: int | None) -> str:
-    percent = history.coverage_percent(receipts, expenses)
-    if percent is None:
-        return "не применимо"
-    return f"{percent} %"
+    """The coverage ratio of a snapshot in the leaflet's one percentage form.
+
+    The text goes to a reader, so it follows the same rule as the page
+    (docs/PERCENT_FORMAT.md): the number is dressed by ``render.percent_text``,
+    never by a second local format. ``assert_text_faithful`` accepts the comma
+    form because ``_norm_num`` normalises the separator.
+    """
+
+    return render.percent_text(history.coverage_percent(receipts, expenses))
 
 
 def snapshot_payload(report: history.HistoricalReport) -> dict[str, Any]:
@@ -380,7 +386,14 @@ _NUMBER_RE = __import__("re").compile(r"-?\d[\d \u00a0]*(?:[.,]\d+)?")
 
 
 def _norm_num(text: str) -> str:
-    return text.replace("\u00a0", "").replace(" ", "")
+    """A number token with its thousands spaces dropped and **one** decimal separator.
+
+    The leaflet prints decimals with a comma (``3,2 %``, ``340,59 ₽``) while the
+    snapshot stores them with a dot; the faith check must not depend on which of the
+    two arrived in the text, so both sides are normalised to the dot here.
+    """
+
+    return text.replace("\u00a0", "").replace(" ", "").replace(",", ".")
 
 
 def _numbers(value: Any) -> set[str]:

@@ -239,6 +239,12 @@ class PublicSite:
         if not str(target).startswith(str(self.static_dir.resolve())) or not target.is_file():
             return self._error(404, "Файл не найден.")
         ctype = "text/css; charset=utf-8" if target.suffix == ".css" else "application/octet-stream"
+        if target.suffix in (".jpg", ".jpeg"):
+            # the paper textures of the collage are real image assets; without the
+            # right type, `X-Content-Type-Options: nosniff` would refuse them
+            ctype = "image/jpeg"
+        elif target.suffix == ".png":
+            ctype = "image/png"
         return Response(
             200,
             ctype,
@@ -262,11 +268,9 @@ class PublicSite:
         status = None
 
         if path == "/":
-            body = self._home(period)
-            title = "Главная"
+            return self._html_response(self._home(period), etag=self._etag_for(period))
         elif path == "/money":
-            body, status = self._money(period)
-            title = "Деньги"
+            return self._html_response(self._money(period, periods))
         elif path == "/events":
             body, status = self._events(period)
             title = "Мероприятия"
@@ -295,6 +299,7 @@ class PublicSite:
             periods=periods,
             body=body,
             status=status or self._status_for(period),
+            mast_head=render.home_mast_head(period_label) if path == "/" else "",
         )
         return self._html_response(page, etag=self._etag_for(period))
 
@@ -325,29 +330,124 @@ class PublicSite:
             source_labels=("исторический архив",),
         )
 
+    def _photo_url(self) -> str | None:
+        """Адрес разрешённого фото подвала, когда ассет выложен в статический контур.
+
+        The approved photograph is deliberately not in git: the operator installs
+        it next to the served static files (`RANREPORT_STATIC_DIR`, by default the
+        package's `static`). Without the asset the poster keeps its honest frame —
+        the mock's drawing (`photo-placeholder.png`) is never published.
+        """
+
+        for name in render.PHOTO_ASSETS:
+            if (self.static_dir / name).is_file():
+                return f"/static/{name}"
+        return None
+
+    def _brand_logo_url(self) -> str | None:
+        """Адрес логотипа владельца, когда ассет выложен в статический контур.
+
+        The owner asked for their logo in place of the asterisk by the title. The
+        compact public file ships in the package ``static`` directory; if an
+        operator points ``RANREPORT_STATIC_DIR`` elsewhere and the file is absent,
+        the decorative mark stays so the masthead never shows a broken image.
+        """
+
+        return f"/static/{render.BRAND_LOGO}" if (self.static_dir / render.BRAND_LOGO).is_file() else None
+
     def _home(self, period: Period) -> str:
         release = self.release_for(period)
         money = release.money if release else None
         events = release.events if release else None
         community = release.community if release else None
-        chronicle = release.chronicle if release else None
-        return render.home_section(
+        from .approved_home import announcements_view, page
+        cards, ranking_note, ranking_empty = announcements_view(
+            release.announcements if release else None
+        )
+        return page(
             period_label=period.label,
             money=money,
             events=events,
             community=community,
-            chronicle=chronicle,
+            status=self._status_for(period) + render.period_switcher('/', self.available_periods(), period.label),
             historical=self.historical_views(period),
+            events_previous=self._previous_month_events(period),
+            subscribers_extra=self._subscriber_history(period),
+            announcements=cards,
+            ranking_note=ranking_note,
+            ranking_empty=ranking_empty,
+            photo_url=self._photo_url(),
+            logo_url=self._brand_logo_url(),
         )
 
-    def _money(self, period: Period) -> tuple[str, str | None]:
+    def _previous_month_events(self, period: Period) -> int | None:
+        """Состоявшиеся мероприятия прошлого календарного месяца — или ничего.
+
+        The poster prints a small figure under the events count; it is read from
+        the previous month's own public release (or the published historical
+        aggregate) rather than inferred from the current period.
+        """
+
+        if period.kind != MONTH or period.start is None:
+            return None
+        label = _shift_month(f"{period.start.year:04d}-{period.start.month:02d}", -1)
+        try:
+            previous = parse_period(label)
+        except Exception:  # noqa: BLE001 - an odd label simply has no neighbour
+            return None
+        release = self.release_for(previous)
+        events = release.events if release else None
+        if events is not None:
+            value = events.metrics.get("total_events")
+            if value is not None:
+                return int(value)
+        return history.metric_view(previous, "events").value
+
+    def _subscriber_history(self, period: Period) -> tuple[Any, ...]:
+        """Датированные точки подписчиков из соседних публичных выпусков.
+
+        A month's release carries only the snapshots inside that month, while the
+        poster needs a base at least 30 days old to state a real change; the two
+        neighbouring months are read as well. All of them are the same allowlisted
+        public DTO, so nothing private crosses the boundary.
+        """
+
+        if period.kind != MONTH or period.start is None:
+            return ()
+        points: list[Any] = []
+        seen: set[str] = set()
+        for shift in (-1, -2):
+            label = _shift_month(f"{period.start.year:04d}-{period.start.month:02d}", shift)
+            try:
+                previous = parse_period(label)
+            except Exception:  # noqa: BLE001 - an odd label simply has no neighbour
+                continue
+            release = self.release_for(previous)
+            community = release.community if release else None
+            if community is None:
+                continue
+            for point in community.channel_points:
+                key = point.on.isoformat()
+                if key not in seen:
+                    seen.add(key)
+                    points.append(point)
+        return tuple(points)
+
+    def _money(self, period: Period, periods: Sequence[str]) -> str:
+        from .money_owner import page
+        from .money_owner_data import money_owner_data
+
         release = self.release_for(period)
-        money = release.money if release else None
-        body = render.money_section(money, period_label=period.label, historical=self.historical_views(period))
-        rows = self.comparisons(period)
-        if rows:
-            body += render.comparisons_block(rows, period_label=period.label)
-        return body, None
+        end = (period.end or self.today()).strftime('%Y-%m')
+        labels = sorted(label for label in self.index.periods() if re.fullmatch(r'[0-9]{4}-[0-9]{2}', label) and label <= end)
+        months = []
+        for label in labels[-6:]:
+            item = release if label == period.label else self.index.by_period(label)
+            if item and item.money:
+                months.append((label, money_owner_data(item.money)))
+        return page(period=period, periods=periods, money=release.money if release else None, months=months,
+                    historical=self.historical_views(period), status=self._status_for(period),
+                    photo_url=self._photo_url(), logo_url=self._brand_logo_url())
 
     def _events(self, period: Period) -> tuple[str, str | None]:
         release = self.release_for(period)

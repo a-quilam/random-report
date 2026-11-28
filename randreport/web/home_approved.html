@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="theme-color" content="#F0EEE6" />
+<title>А дорог ли РанДом?</title>
+<link rel="stylesheet" href="/static/approved-home.css">
+</head>
+<body>
+<a class="skip" href="#content">К показателям</a>
+<main id="content" tabindex="-1" class="poster">
+ <div class="demo-note">Отчёт за $period<br>РанДом Культуры</div>
+ <header class="mast">
+  <a class="brand" href="#content" aria-label="РанДом Культуры — наверх">$brand_mark<span class="scrap paper-sand"><b>РанДом</b><b>Культуры</b></span></a>
+  <h1 class="headline" aria-label="А дорог ли РанДом?">
+    <span class="head-top"><span class="scrap paper-yellow head-a">А</span><span class="scrap paper-news head-dorog">дорог ли</span></span>
+    <span class="head-bottom"><span class="scrap paper-red head-random">РанДом</span><span class="scrap paper-news head-question">?</span></span>
+  </h1>
+  <p class="intro-line">ОТКРЫТАЯ ОТЧЁТНОСТЬ СО-ОБЩЕСТВЕННОГО ПРОСТРАНСТВА</p>
+ </header>
+ <section id="mainstage" tabindex="-1" class="mainstage" aria-label="Основные показатели">
+  $photo
+  <div class="measurements">
+   <div class="figures">
+    <section class="metric events" id="events" aria-labelledby="events-label"><span class="scrap paper-purple number$events_wide" id="eventsCount">$events</span><span id="events-label" class="scrap paper-news tag">$events_label</span><span class="subline helpful" tabindex="0" id="prevEvents" data-help="$previous_hint">$previous</span></section>
+    <section class="metric subs" id="community" aria-labelledby="subscribers-label"><span class="scrap paper-yellow number$subs_wide" id="subCount">$subscribers</span><span id="subscribers-label" class="scrap paper-news tag">$subs_label</span><span class="subline helpful" tabindex="0" id="subGrowth" data-help="$delta_hint">$delta</span></section>
+   </div>
+   $finance
+  </div>
+ </section>
+ <section class="trend" id="announcements" aria-labelledby="trendTitle">
+   <div class="stripe-heading"><h2 id="trendTitle">ЧТО ПЕРЕСЫЛАЛИ</h2><span class="t30">$ranking_note</span></div>
+   $ranking
+ </section>
+ $navigation
+ <footer class="footer"><span>РанДом Культуры · отчёт за $period</span><details class="home-status"><summary>О выпуске</summary><p>Обновляем раз в сутки, в 03:00 по Москве</p>$status</details></footer>
+</main>
+</body></html>

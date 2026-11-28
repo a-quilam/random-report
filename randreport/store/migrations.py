@@ -592,6 +592,27 @@ _MIGRATION_7 = (
     "CREATE INDEX idx_report_exclusions_active ON finance_report_exclusions(restored_at)",
 )
 
+# --- migration 8: forwarding counters (MTProto) --------------------------- #
+#
+# The Bot API never exposes forward counters; a bot-logged MTProto client
+# (Telethon 1.x) reads ``forwards``/``views`` per message id.  The ids come from
+# ``public_message_archive`` — the archive is extended with the media-group id it
+# already receives from the inbox but never stored — and the counters live in
+# their own 1:1 table so the daily re-measurement never rewrites archive rows.
+# ``forwards = NULL`` is "never measured"; a measured zero stays a zero.
+_MIGRATION_8 = (
+    "ALTER TABLE public_message_archive ADD COLUMN media_album_id TEXT",
+    """
+    CREATE TABLE post_forward_stats (
+        message_id TEXT PRIMARY KEY,
+        forwards   INTEGER,               -- NULL = unknown, never faked to 0
+        views      INTEGER,               -- NULL = unknown
+        fetched_at TEXT NOT NULL,         -- last successful measurement (UTC ISO)
+        channel_id TEXT NOT NULL
+    )
+    """,
+)
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(1, "initial public-contract schema", _INITIAL),
     Migration(2, "llm cache, budget ledger and deferred jobs", _MIGRATION_2),
@@ -600,6 +621,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration(5, "passive Telegram webhook inbox for public channel posts", _MIGRATION_5),
     Migration(6, "durable getUpdates offset for the domain-less intake", _MIGRATION_6),
     Migration(7, "reversible per-operation report exclusions", _MIGRATION_7),
+    Migration(8, "Telegram forwarding counters measured over MTProto", _MIGRATION_8),
 )
 
 # Tables required by docs/REQUIREMENTS.md section 10.

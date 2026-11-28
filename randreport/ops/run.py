@@ -16,7 +16,7 @@ import os
 import sqlite3
 import time
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol, Sequence
 
@@ -554,6 +554,92 @@ class NewsAdapter:
                 "coverage_reasons": list(reasons),
                 "issues": list(outcome.issues),
             },
+        )
+
+
+# --------------------------------------------------------------------------- #
+# Forwarding counters over MTProto (Telethon, bot login)                       #
+# --------------------------------------------------------------------------- #
+
+class TelegramStatsAdapter(SourceAdapter):
+    """Re-measure forwards/views of the rolling 30-day window posts.
+
+    The window is 30 calendar days by Moscow time, including the current day,
+    and the message ids come from the archive the other adapters maintain — the
+    reader never scans channel history.  Every sync re-measures *all* window
+    posts, because forward counts of old announcements keep changing.  A Telegram
+    failure saves nothing for the unanswered posts and never wipes the values a
+    previous pass stored; the site keeps rendering the last measured numbers.
+    """
+
+    name = "telegram_stats"
+
+    def __init__(self, reader: Any, *, window_days: int = 30) -> None:
+        if window_days < 1:
+            raise ValueError("window_days must be positive")
+        self._reader = reader
+        self._window_days = window_days
+
+    def window(self, cutoff: datetime) -> tuple[date, date]:
+        """The inclusive Moscow-day window this pass measures, ``(from, to)``."""
+
+        end = msk_day(cutoff)
+        return end - timedelta(days=self._window_days - 1), end
+
+    def sync(self, *, conn: sqlite3.Connection, cutoff: datetime, logical_date: str, cursor: str | None) -> SourceOutcome:
+        window_start, window_end = self.window(cutoff)
+        posts = [
+            post
+            for post in repo.archived_posts(conn)
+            if not post.deleted and window_start <= msk_day(post.posted_at) <= window_end
+        ]
+        ids = sorted({post.message_id for post in posts}, key=int)
+        stamp = cutoff.isoformat()
+        base_payload: dict[str, Any] = {
+            "window_from": window_start.isoformat(),
+            "window_to": window_end.isoformat(),
+        }
+        if not ids:
+            # an empty window is a successful measurement of nothing: the last
+            # stored counters stay, the source reports a clean pass
+            return SourceOutcome(
+                source=self.name,
+                status="ok",
+                cursor=None,
+                data_as_of=stamp,
+                coverage="complete",
+                payload={**base_payload, "posts": 0, "updated": 0, "latest_fetch": repo.latest_counter_fetch(conn)},
+            )
+
+        report = self._reader.fetch(ids)
+        counts = repo.upsert_post_counters(conn, report.counters, now=stamp)
+        reasons: list[str] = []
+        if report.failed_batches:
+            reasons.append("batch_failures")
+        if report.flood_wait_s is not None:
+            reasons.append(f"flood_wait_{int(report.flood_wait_s)}s")
+        coverage = "complete" if not reasons else "partial"
+        payload: dict[str, Any] = {
+            **base_payload,
+            "posts": len(ids),
+            "measured": len(report.fetched_ids),
+            "deleted_or_missing": len(report.skipped_ids),
+            "failed": len(report.failed_batches),
+            "updated": counts.changed + counts.new,
+            "flood_wait_s": report.flood_wait_s,
+            "latest_fetch": repo.latest_counter_fetch(conn),
+            "coverage": coverage,
+            "coverage_reasons": reasons,
+        }
+        return SourceOutcome(
+            source=self.name,
+            status="ok" if not reasons else "partial",
+            counts=counts,
+            cursor=None,  # the window is re-derived every pass; there is no cursor
+            data_as_of=stamp,
+            coverage=coverage,
+            payload=payload,
+            error="; ".join(reasons) or None,
         )
 
 

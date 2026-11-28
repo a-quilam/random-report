@@ -38,6 +38,7 @@ from ..domain.finance import (
 )
 from ..domain.timeframes import Period, msk_day
 from ..projection.privacy import public_json
+from ..projection.forwards import build_announcements_section
 from ..projection.release import (
     ReleaseContext,
     build_events_payload,
@@ -172,12 +173,24 @@ class ReleaseBuilder:
         events = build_events_payload(ctx, selection, stats=stats)
         community = self._community(ctx, conn)
         chronicle = self._chronicle(ctx, conn)
+        # The forwarding ranking is deliberately period-independent: the same
+        # sliding 30-day window rides on every release of this build day, so the
+        # monthly filter never reshuffles it (the task's §7).
+        announcements = build_announcements_section(
+            conn,
+            cutoff=cutoff,
+            freshness=freshness,
+            verification=verification,
+            completeness=completeness,
+            source_labels=source_labels,
+        )
 
         sections: dict[str, StrictDTO] = {
             "money": money,
             "events": events,
             "community": community,
             "chronicle": chronicle,
+            "announcements": announcements,
         }
         release_id = content_release_id(sections)
         final = {name: dataclasses.replace(dto, release_id=release_id) for name, dto in sections.items()}  # type: ignore[type-var]

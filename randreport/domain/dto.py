@@ -383,6 +383,61 @@ class CommunityDTO(StrictDTO):
 
 
 @dataclass(frozen=True)
+class ForwardItemDTO(StrictDTO):
+    """One ranked announcement card of the «Что пересылали» block."""
+
+    rank: int
+    title: str
+    url: str
+    forwards: int
+    published_on: date
+
+    SCALARS: ClassVar[Mapping[str, str]] = {
+        "rank": "int",
+        "title": "str",
+        "url": "str",
+        "forwards": "int",
+        "published_on": "date",
+    }
+
+
+@dataclass(frozen=True)
+class AnnouncementsDTO(StrictDTO):
+    """Top-3 announcements by measured Telegram forwards over the rolling window.
+
+    The window is independent of the release period: every release of a build
+    day carries the same sliding 30-day ranking, so the monthly filter never
+    reshuffles it.  ``fetched_at`` is the last successful MTProto measurement
+    (``None`` = counters were never received, the block then shows the honest
+    empty state instead of zeros).
+    """
+
+    as_of: date
+    release_id: str
+    freshness: str
+    verification: str
+    completeness: str
+    source_labels: tuple[str, ...]
+    window_from: date
+    window_to: date
+    fetched_at: str | None
+    items: tuple[ForwardItemDTO, ...]
+
+    NESTED: ClassVar[Mapping[str, type]] = {}
+    ELEMENTS: ClassVar[Mapping[str, type]] = {"items": ForwardItemDTO}
+    SCALARS: ClassVar[Mapping[str, str]] = {
+        "as_of": "date",
+        "freshness": "str",
+        "verification": "str",
+        "completeness": "str",
+        "source_labels": "str_tuple",
+        "window_from": "date",
+        "window_to": "date",
+        "fetched_at": "datetime",
+    }
+
+
+@dataclass(frozen=True)
 class NewsItemDTO(StrictDTO):
     id: str
     title: str

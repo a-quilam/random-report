@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#F0EEE6">
+<title>Деньги — А дорог ли РанДом?</title>
+<link rel="stylesheet" href="/static/money.css">
+</head>
+<body>
+<a class="skip" href="#content">К данным отчёта</a>
+<div class="page">
+  <header class="topbar">
+    <a class="brand" href="/?period=$period" aria-label="На главную — РанДом Культуры">$brand<span class="brand-paper paper sand">РанДом<br>Культуры</span></a>
+    <div class="topright">
+      <nav class="nav" aria-label="Разделы РанДома">
+        <a href="/?period=$period" class="nav-slip paper news">Главная</a>
+        <a href="/money?period=$period" aria-current="page" class="nav-slip paper red">Деньги</a>
+        <a href="/events?period=$period" class="nav-slip paper sand">Мероприятия</a>
+        <a href="/community?period=$period" class="nav-slip paper lilac">Сообщество</a>
+        <a href="/support?period=$period" class="nav-slip paper yellow">Поддержка</a>
+        <a href="/reports?period=$period" class="nav-slip paper news">Архив</a>
+      </nav>
+      <div class="edition"><span class="edition-mark">*</span> Открытая отчётность · обновление в 03:00 МСК</div>
+    </div>
+  </header>
+
+  <main id="content" tabindex="-1">
+    <section class="hero" aria-labelledby="money-title">
+      <div class="hero-head">
+        <p class="small-rubric">Лист № 02 / содержим подвал вместе</p>
+        <h1 id="money-title" class="cut-title"><span class="title-d paper yellow">Д</span><span class="title-middle paper news">ЕНЬ</span><span class="title-end paper red">ГИ</span><span class="title-stop" aria-hidden="true">.</span></h1>
+        <p class="one-liner">Что стоит наш подвал — и кто за него платит?</p>
+      </div>
+      <form class="period-plate" action="/money" method="get">
+        <span class="period-tape" aria-hidden="true"></span>
+        <label for="period-select">ОТЧЁТ ЗА</label>
+        <select id="period-select" name="period">$options</select>
+        <button type="submit">Показать</button><span class="period-date">$as_of</span>
+      </form>
+
+      <div class="hero-core">
+        <div class="measure">
+          <div class="coverage-kicker"><span class="kicker-asterisk">✳</span> ПОКРЫЛИ РАСХОДЫ</div>
+          <div class="percentage-area">
+            <div class="percentage-cut paper lilac"><strong id="coverage-value" data-field="coverage_percent">$coverage</strong></div>
+            <div class="coverage-aside"><span class="red-scribble">за счёт</span><br>донатов и деятельности<br>пространства</div>
+          </div>
+          <div class="coverage-total">
+            $bar
+            <div class="coverage-stamp" id="coverage-stamp">$stamp</div>
+          </div>
+          $caution
+        </div>
+        $photo
+      </div>
+    </section>
+
+    <section class="amount-stage" aria-labelledby="flow-heading">
+      <h2 id="flow-heading" class="visually-hidden">Поступления и расходы</h2>
+      <div class="amount-flow amount-in">
+        <div class="amount-word paper yellow">ПРИШЛО</div>
+        <strong class="huge-amount" id="income-sum" data-field="compensation_kopecks">$income</strong>
+        <div class="amount-suffix">поступления от деятельности и донатов <details class="explain"><summary class="inline-help" aria-label="Пояснение о поступлениях">?</summary><p>Не включает взносы коммунаров на содержание и переводы между своими счетами.</p></details></div>
+      </div>
+      <div class="cross-strike" aria-hidden="true"></div>
+      <div class="amount-flow amount-out">
+        <div class="amount-word paper news">УШЛО</div>
+        <strong class="huge-amount" id="expense-sum" data-field="expense_kopecks">$expense</strong>
+        <div class="amount-suffix">расходы без возвратов покупок</div>
+      </div>
+      <p class="flow-footnote" id="flow-footnote">Субсидии коммунаров в поступления не включены: иначе самоокупаемость будет нарисованной.</p>
+    </section>
+
+    <section class="category-layout" aria-label="Поступления и расходы по категориям">
+      <div class="ledger-side">
+        <div class="section-heading"><h2 id="ledger-heading">ОТКУДА?</h2><span class="small-clipping paper lilac">Поступления</span></div>
+        <div class="category-paper income-paper">
+          <div class="ledger-note">ПУБЛИЧНЫЕ СУММЫ ПО КАТЕГОРИЯМ</div>
+          <div id="incoming-categories" class="category-rows">$incoming</div>
+        </div>
+        <p class="under-paper">Отдельных переводов и имён на сайте нет.</p>
+      </div>
+      <div class="ledger-side expenses-side">
+        <div class="section-heading"><h2>КУДА?</h2><span class="small-clipping paper sand">Расходы</span></div>
+        <div class="category-paper expense-paper">
+          <div class="ledger-note">НА ЧТО УХОДЯТ ДЕНЬГИ ПОДВАЛА</div>
+          <div id="outgoing-categories" class="category-rows">$outgoing</div>
+        </div>
+        <p class="under-paper">Раскрой подсказку у категории, чтобы узнать подробности.</p>
+      </div>
+    </section>
+
+    <section class="cash-layout" aria-label="Дополнительные финансовые сведения">
+      <div class="subsidy-wedge"><span class="subsidy-heading">А КОММУНАРЫ?</span><strong id="subsidy-value" data-field="subsidy_kopecks">$subsidy</strong><span id="subsidy-note">$subsidy_note</span></div>
+      <div class="balance-wedge"><span class="balance-heading">ОСТАТОК В КАССЕ</span><strong id="balance-value" data-field="balance_kopecks">$balance</strong><details class="explain"><summary class="balance-whatis">ЭТО НЕ ПРИБЫЛЬ ↗</summary><p>Это деньги на счетах РанДома на дату снимка. Они могут быть предназначены для аренды или других обязательств. Остаток — не прибыль и не свободный резерв.</p></details></div>
+      <div class="cash-scratch" aria-hidden="true"></div>
+    </section>
+
+    <section class="trend-section" aria-labelledby="trend-heading">
+      <div class="section-heading history-title"><h2 id="trend-heading">КАК МЕНЯЛОСЬ?</h2><span class="small-clipping paper yellow">За последние месяцы</span></div>
+      <div class="trend-row"><div class="trend-graph" id="trend-graph">$trend</div><div class="trend-text" id="trend-text">$trend_note</div></div>
+    </section>
+
+  </main>
+    <footer class="endnote">
+      <div class="end-colophon">ДЕНЬГИ — ЭТО НЕ ВЕСЬ РАНДОМ.<br>НО БЕЗ НИХ ПОДВАЛА НЕ БУДЕТ.</div>
+      <div class="foot-links"><a href="/methodology?period=$period">Как мы считаем ↗</a>$csv</div>
+      <details class="audit-details"><summary>Что известно и чего пока не знаем?</summary><div id="audit-info">$audit</div></details>
+      <p class="copyright">РанДом Культуры · данные Zenmoney · одна синхронизация в сутки в 03:00 МСК</p>
+    </footer>
+</div>
+</body>
+</html>

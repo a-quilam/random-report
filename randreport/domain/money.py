@@ -81,6 +81,33 @@ def format_rub(kopecks: int) -> str:
     return f"{format_kopecks(kopecks)} \u20bd"
 
 
+def format_percent(value: str | int | Decimal | None, *, digits: int = 1) -> str | None:
+    """A percentage in the leaflet's one Russian form, e.g. ``3,2``; ``None`` stays ``None``.
+
+    The single place a percentage becomes text (docs/PERCENT_FORMAT.md): a comma as
+    the decimal separator, exactly ``digits`` digits after it, rounded with
+    ``SHARE_ROUNDING`` — the same convention the money formatter follows. The result
+    is the number alone: no ``%``, no words, the caller adds them
+    (``render.percent_text``). An unreadable value is ``None``, exactly like an
+    unknown share, so the display layer never prints an unparsed token as if it were
+    a percentage. Type discipline stays strict: a float or a bool raises, as
+    everywhere in this module.
+    """
+
+    if value is None:
+        return None
+    text = value.strip().rstrip("%").strip() if isinstance(value, str) else value
+    if isinstance(text, str) and not text:
+        return None
+    try:
+        number = _to_decimal(text)
+    except MoneyValueError:
+        return None
+    quantum = Decimal(1).scaleb(-digits)
+    rendered = number.quantize(quantum, rounding=SHARE_ROUNDING)
+    return f"{rendered:.{digits}f}".replace(".", ",")
+
+
 def sum_kopecks(values: Iterable[int]) -> int:
     """Sum integer kopecks, refusing anything that is not an integer."""
 

@@ -25,6 +25,7 @@ defensive and refuses unknown shapes instead of guessing.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
@@ -152,29 +153,22 @@ def _account_id(value: Any) -> str | None:
 
 
 def _amount_kopecks(value: Any, notes: list[str] | None = None) -> int:
-    """A source amount in the account's minor units: never a float in a sum.
-
-    The API states amounts as JSON numbers; a float is converted through its exact
-    decimal text instead of being truncated by ``int()``.
-    """
-
+    """Convert wire major units to signed SQLite minor units without rounding."""
     if value is None:
         return 0
-    if isinstance(value, bool):
-        raise ZenmoneyProtocolError("a boolean is not an amount")
-    if isinstance(value, int):
-        return value
-    if isinstance(value, (float, str, Decimal)):
-        try:
-            decimal = Decimal(str(value))
-        except InvalidOperation as exc:
-            raise ZenmoneyProtocolError(f"unexpected amount {value!r}") from exc
-        if decimal != decimal.to_integral_value():
-            if notes is not None:
-                notes.append("non_integral_amount")
-            decimal = decimal.to_integral_value(rounding="ROUND_HALF_EVEN")
-        return int(decimal)
-    raise ZenmoneyProtocolError(f"unexpected amount {value!r}")
+    if isinstance(value, bool) or not isinstance(value, (int, float, str, Decimal)):
+        raise ZenmoneyProtocolError("invalid money amount")
+    try:
+        amount = Decimal(str(value))
+    except InvalidOperation as exc:
+        raise ZenmoneyProtocolError("invalid money amount") from exc
+    if not amount.is_finite() or amount.copy_abs() > Decimal("92233720368547758.07"):
+        raise ZenmoneyProtocolError("amount outside supported range")
+    sign, digits, exponent = amount.as_tuple()
+    minor = Decimal((sign, digits, exponent + 2))
+    if minor != minor.to_integral_value():
+        raise ZenmoneyProtocolError("amount contains a fractional minor unit")
+    return int(minor)
 
 
 def currency_code(*values: Any) -> str | None:
@@ -295,7 +289,7 @@ class ZenmoneyClient:
         if not response.ok:
             raise HttpStatusError(response.status, response.text())
         try:
-            payload = response.json()
+            payload = json.loads(response.body, parse_float=Decimal)
         except ValueError as exc:  # pragma: no cover - defensive
             raise ZenmoneyProtocolError("diff response is not JSON") from exc
         return self.normalize(payload, revision_hint=server_timestamp)

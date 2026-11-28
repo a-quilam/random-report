@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from ..domain.dto import (
+    AnnouncementsDTO,
     ChronicleDTO,
     CommunityDTO,
     EventsDTO,
@@ -36,6 +37,7 @@ SECTION_TYPES: Mapping[str, type] = {
     "events": EventsDTO,
     "community": CommunityDTO,
     "chronicle": ChronicleDTO,
+    "announcements": AnnouncementsDTO,
 }
 
 CURRENT = "current"
@@ -75,6 +77,17 @@ class Release:
     def chronicle(self) -> ChronicleDTO | None:
         dto = self.sections.get("chronicle")
         return dto if isinstance(dto, ChronicleDTO) else None
+
+    @property
+    def announcements(self) -> AnnouncementsDTO | None:
+        """The sliding-window forwarding ranking, when the release carries it.
+
+        Releases built before the counters existed have no such section; the
+        home page then keeps its honest empty state instead of inventing ranks.
+        """
+
+        dto = self.sections.get("announcements")
+        return dto if isinstance(dto, AnnouncementsDTO) else None
 
     @property
     def period_label(self) -> str | None:

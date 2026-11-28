@@ -35,6 +35,7 @@ and a layout that survives a 320 px viewport with horizontally scrollable tables
 from __future__ import annotations
 
 import calendar
+from datetime import timedelta
 from decimal import Decimal
 from html import escape as _escape
 from typing import Any, Iterable, Mapping, Sequence
@@ -48,7 +49,7 @@ from ..domain.dto import (
     MoneyDTO,
     PublicEventDTO,
 )
-from ..domain.money import format_kopecks, share_percent
+from ..domain.money import format_kopecks, format_percent, share_percent
 from ..domain.timeframes import month_bounds
 from . import hints
 
@@ -159,8 +160,32 @@ def rub_from_rubles(rubles: int | None) -> str:
     return f"{rubles:,.0f}".replace(",", " ") + " ₽"
 
 
-def percent_text(value: str | None) -> str:
-    return "не применимо" if value is None else f"{value} %"
+def percent_text(value: str | Decimal | int | None) -> str:
+    """A percentage exactly as the leaflet prints it: ``3,2 %`` (docs/PERCENT_FORMAT.md).
+
+    The one display wrapper for percentages on the leaflet, the counterpart of
+    :func:`rub_from_kopecks` for money: one rule — comma as the decimal separator,
+    one digit, one space before ``%`` — applied wherever a percentage is *printed*.
+    An unknown percentage reads ``не применимо``; it never becomes a bare zero. The
+    number itself is formatted by :func:`randreport.domain.money.format_percent`, so
+    a value coming from a DTO string and one computed in the renderer dress alike.
+    """
+
+    rendered = format_percent(value)
+    return "не применимо" if rendered is None else f"{rendered} %"
+
+
+def _percent_chart(value: str | Decimal | int | None) -> str:
+    """The same rule where a coverage chart says «нет данных» for an unknown share.
+
+    ``coverage_bar`` prints «нет данных» in its legend, its text table and its
+    ``aria`` label, and keeps that wording (docs/PERCENT_FORMAT.md section 1); only
+    the number's form is shared with :func:`percent_text`. Used only for the
+    percentages that are *drawn* in the chart as well as printed.
+    """
+
+    rendered = format_percent(value)
+    return "нет данных" if rendered is None else f"{rendered} %"
 
 
 def _delta_text(value: int | None, unit: str) -> str:
@@ -174,6 +199,42 @@ def _thousands(value: int | None) -> str:
     if value is None:
         return "нет данных"
     return f"{value:,}".replace(",", " ")
+
+
+#: Месяц в предложном падеже — для метки «событие в ноябре» из утверждённого макета.
+MONTHS_IN = {
+    1: "январе", 2: "феврале", 3: "марте", 4: "апреле", 5: "мае", 6: "июне",
+    7: "июле", 8: "августе", 9: "сентябре", 10: "октябре", 11: "ноябре", 12: "декабре",
+}
+
+
+def plural(value: int | None, one: str, few: str, many: str) -> str:
+    """Русская форма слова при числе: 1 событие, 2 события, 11 событий.
+
+    The count on the poster is printed by the same rule the approved mock used, so
+    a small number never reads as a mistake («1 событий»).
+    """
+
+    if value is None:
+        return many
+    tail = abs(int(value)) % 100
+    if 11 <= tail <= 14:
+        return many
+    tail %= 10
+    if tail == 1:
+        return one
+    if 2 <= tail <= 4:
+        return few
+    return many
+
+
+def month_in(period_label: str) -> str | None:
+    """Название месяца в предложном падеже; ``None`` для года и «всего времени»."""
+
+    parts = period_label.split("-")
+    if len(parts) < 2 or not parts[1].isdigit():
+        return None
+    return MONTHS_IN.get(int(parts[1]))
 
 
 # --------------------------------------------------------------------------- #
@@ -229,6 +290,32 @@ def nav(active: str, period: str) -> str:
     return f'<nav class="sections" aria-label="Разделы сайта"><ul>{"".join(items)}</ul></nav>'
 
 
+#: Семь разделов листка вырезками-ярлыками (макет: нижняя коллажная навигация).
+#: Каждая пара — адрес, подпись и бумага вырезки; цвета ровно те, что в макете.
+NAV_CUTS: tuple[tuple[str, str, str], ...] = (
+    ("/money", "Деньги", "paper-yellow"),
+    ("/events", "Мероприятия", "paper-news"),
+    ("/community", "Сообщество", "paper-purple"),
+    ("/support", "Поддержка", "paper-cream"),
+    ("/chronicle", "Летопись", "paper-red"),
+    ("/reports", "Архив", "paper-news"),
+    ("/methodology", "Методология", "paper-sand"),
+)
+
+
+def nav_cuts(active: str, period: str) -> str:
+    """Семь навигационных вырезок: настоящие ссылки, а не одинаковые кнопки."""
+
+    items = []
+    for href, label, paper in NAV_CUTS:
+        current = ' aria-current="page"' if href == active else ""
+        query = f"?period={e(period)}" if period and period != "all" else ""
+        items.append(
+            f'<a class="nav-cut scrap {e(paper)}" href="{e(href)}{query}"{current}>{e(label)}</a>'
+        )
+    return f'<nav class="site-nav" aria-label="Разделы листка">{"".join(items)}</nav>'
+
+
 def status_line(
     *,
     period_label: str,
@@ -269,7 +356,17 @@ def layout(
     status: str = "",
     description: str = SITE_TAGLINE,
     scripts: str = "",
+    mast_head: str = "",
 ) -> str:
+    """Один лист бумаги: марка-вырезка, выпуск, состояние данных и полосы.
+
+    The poster shell of the approved mock: a solid ``#F0EEE6`` sheet, a torn-paper
+    brand at the top left, the run's own small print (period, freshness, sources)
+    at the top right, the page's own composition in the middle and the seven
+    navigation cuts before the footer. Every page is a *different page of the same
+    paper*, not a copy of the home composition.
+    """
+
     csv_safe = len(period) in (4, 7)
     csv_link = (
         f'<a href="/api/public/export/categories.csv?period={e(period)}">CSV агрегатов за период</a>'
@@ -286,19 +383,28 @@ def layout(
         '<link rel="alternate" type="application/json" href="/api/public/overview">'
         "</head><body>"
         '<a class="skip" href="#content">Перейти к содержанию</a>'
+        '<div class="poster">'
         '<header class="site-header">'
-        '<div class="masthead">'
-        f'<p class="mark"><span class="star" aria-hidden="true">✳</span><a href="/?period={e(period)}">{e(SITE_NAME)}</a></p>'
-        f'<p class="mark-sub">{e(SITE_TAGLINE)}</p>'
-        "</div>"
-        f"{nav(active, period)}"
+        '<div class="mast">'
+        f'<a class="brand" href="/?period={e(period)}" aria-label="{e(SITE_NAME)} — на главную">'
+        '<span class="star" aria-hidden="true">✳</span>'
+        '<span class="scrap paper-sand"><span class="brand-line">РанДом</span><span class="brand-line">Культуры</span></span></a>'
+        '<div class="mast-main">'
+        f"{mast_head}"
+        '<div class="sheet-top">'
         '<div class="toolrow">'
         f"{period_switcher(active, periods, period)}"
-        "<p class=\"cadence\">Обновляем раз в сутки, в 03:00 по Москве</p>"
+        '<p class="cadence">Обновляем раз в сутки, в 03:00 по Москве</p>'
+        "</div>"
+        "</div>"
+        "</div>"
         "</div>"
         "</header>"
-        f"{status}"
-        f'<main id="content" tabindex="-1">{body}</main>'
+        # the run's own small print sits at the foot of the sheet, like a
+        # newspaper's imprint: it never pushes the first screen's composition down
+        f'<main id="content" tabindex="-1">{body}'
+        f'<div class="colophon">{status}{nav(active, period)}</div>'
+        f"{nav_cuts(active, period)}</main>"
         '<footer class="site-footer">'
         '<div class="foot-cols">'
         "<div>"
@@ -315,13 +421,38 @@ def layout(
         "</div>"
         "<div>"
         '<p class="foot-head">Данные и связь</p>'
-        f"<p><a href=\"/methodology?period={e(period)}\">Как считаются цифры</a> · {csv_link}</p>"
+        f'<p><a href="/methodology?period={e(period)}">Как считаются цифры</a> · {csv_link}</p>'
         f'<p><a href="{e(history.CHANNEL_URL)}" rel="noopener">Публичный канал</a></p>'
         "</div>"
         "</div>"
         "</footer>"
+        "</div>"
         f"{scripts}"
         "</body></html>"
+    )
+
+
+def section_banner(kind: str, eyebrow_text: str, title: str, lead: str) -> str:
+    """Начало полосы раздела: та же бумага, но своя шапка и своё главное пятно.
+
+    ``kind`` выбирает бумагу и наклон заголовка (``sheet-money`` и так далее):
+    каждая из семи страниц — отдельный лист одной газеты в том же языке, а не
+    повтор геометрии главной.
+    """
+
+    paper = {
+        "money": "paper-red",
+        "events": "paper-yellow",
+        "community": "paper-purple",
+        "support": "paper-cream",
+        "chronicle": "paper-news",
+        "reports": "paper-sand",
+        "methodology": "paper-news",
+    }.get(kind, "paper-news")
+    return (
+        f'<header class="banner"><p class="eyebrow">{e(eyebrow_text)}</p>'
+        f'<h1><span class="scrap {e(paper)}">{e(title)}</span></h1>'
+        f'<p class="lead">{e(lead)}</p></header>'
     )
 
 
@@ -463,6 +594,8 @@ def coverage_bar(
     missing_label: str = "недостающая часть",
     state_note: str = "",
     state_kind: str = "rust",
+    alt_collapsed: bool = False,
+    owner_sheet: bool = False,
 ) -> str:
     """A 100 % coverage bar built from labelled data segments.
 
@@ -474,8 +607,8 @@ def coverage_bar(
 
     described: list[str] = []
     for label, value in segments:
-        described.append(f"{label}: {'нет данных' if value is None else f'{value} %'}")
-    headline = "не применимо" if total_percent is None else f"{total_percent} %"
+        described.append(f"{label}: {_percent_chart(value)}")
+    headline = percent_text(total_percent)
     missing = None if total_percent is None else max(Decimal(0), Decimal(100) - total_percent)
 
     drawn: list[list[Any]] = []
@@ -507,19 +640,40 @@ def coverage_bar(
         rects.append(f'<rect class="seg seg-{index % 4}" x="{offset}" y="0" width="{item[2]}" height="10"></rect>')
         offset += Decimal(item[2])
     legend: list[str] = [
-        f'<li><span class="swatch seg-{index % 4}" aria-hidden="true"></span>{e(item[0])} {item[1]} %</li>'
+        f'<li><span class="swatch seg-{index % 4}" aria-hidden="true"></span>{e(item[0])} {percent_text(item[1])}</li>'
         for index, item in enumerate(drawn)
     ]
     if missing is not None and missing > 0:
         rects.append(f'<rect class="seg seg-missing" x="{offset}" y="0" width="{missing}" height="10"></rect>')
         legend.append(
-            f'<li><span class="swatch seg-missing" aria-hidden="true"></span>{e(missing_label)} {missing} %</li>'
+            f'<li><span class="swatch seg-missing" aria-hidden="true"></span>{e(missing_label)} {percent_text(missing)}</li>'
         )
     label_text = f"Покрытие расходов поступлениями: {headline}. " + "; ".join(described)
-    table_rows = [(label, "нет данных" if value is None else f"{value} %") for label, value in segments]
-    table_rows.append(("Недостающая часть", "нет данных" if missing is None else f"{missing} %"))
+    table_rows = [(label, _percent_chart(value)) for label, value in segments]
+    table_rows.append(("Недостающая часть", _percent_chart(missing)))
     table_rows.append(("Итого покрытие", headline))
     marker = f' <span class="stamp stamp-{e(state_kind)}">{e(state_note)}</span>' if state_note else ""
+    alt = data_table(
+        "Покрытие расходов по источникам (текстовая версия графика)",
+        ("Источник", "Доля"),
+        [(e(label), e(value)) for label, value in table_rows],
+        numeric_from=1,
+        classes="chart-alt",
+    )
+    if alt_collapsed:
+        # on the poster the chart's own legend already names every share, so the
+        # numeric alternative stays one tap away instead of lengthening the sheet;
+        # it is still in the document, so the chart keeps its text equivalent
+        alt = (
+            '<details class="chart-alt-wrap"><summary>текстовая версия графика</summary>'
+            f"{alt}</details>"
+        )
+    if owner_sheet:
+        return (f'<figure class="coverage"><div class="segments-bar"><svg class="coverage-bar" '
+                f'viewBox="0 0 100 10" preserveAspectRatio="none" role="img" aria-label="{e(label_text)}">'
+                f'{"".join(rects)}</svg></div><div class="bar-scale"><span>0</span><span>100,0 %</span></div>'
+                f'<details><summary>Из чего сложилось покрытие?</summary><ul class="coverage-legend">'
+                f'{"".join(legend)}</ul>{alt}</details></figure>')
     return (
         f'<figure class="coverage">'
         f'<figcaption>Покрытие расходов: <strong>{e(headline)}</strong>{marker}</figcaption>'
@@ -527,13 +681,7 @@ def coverage_bar(
         f'role="img" aria-label="{e(label_text)}">{"".join(rects)}</svg>'
         f'<ul class="coverage-legend">{"".join(legend)}</ul>'
         f"</figure>"
-        + data_table(
-            "Покрытие расходов по источникам (текстовая версия графика)",
-            ("Источник", "Доля"),
-            [(e(label), e(value)) for label, value in table_rows],
-            numeric_from=1,
-            classes="chart-alt",
-        )
+        + alt
     )
 
 
@@ -686,7 +834,7 @@ def _coverage_is_drawable(money: MoneyDTO, *, state: str) -> bool:
     return not (coverage == 0 and state == PARTIAL)
 
 
-def money_coverage_block(money: MoneyDTO, *, state: str) -> str:
+def money_coverage_block(money: MoneyDTO, *, state: str, alt_collapsed: bool = False) -> str:
     """The coverage block: a stamped bar, or an honest refusal to compute it."""
 
     coverage = _coverage_of(money)
@@ -704,6 +852,7 @@ def money_coverage_block(money: MoneyDTO, *, state: str) -> str:
             total_percent=coverage,
             state_note="предварительно" if partial else "полный период",
             state_kind="rust" if partial else "ok",
+            alt_collapsed=alt_collapsed,
         )
     ]
     rounding = " Доли в таблице округлены до десятых, поэтому их сумма может отличаться от итогового процента на одну десятую."
@@ -747,10 +896,13 @@ def money_fields(money: MoneyDTO, *, state: str) -> str:
 
 def money_section(money: MoneyDTO | None, *, period_label: str, historical: Mapping[str, "history.MetricView | None"]) -> str:
     blocks: list[str] = [
-        eyebrow(f"лист · деньги · {period_label}"),
-        "<h1>Деньги: расходы, поступления, остаток</h1>",
-        '<p class="lead">Из чего складывается содержание подвала и насколько его закрывают поступления. '
-        "Показываем суммы категорий и публичные агрегаты — без операций и без имён.</p>",
+        section_banner(
+            "money",
+            f"Полоса · деньги · {period_label}",
+            "Деньги: расходы, поступления, остаток",
+            "Из чего складывается содержание подвала и насколько его закрывают поступления: "
+            "суммы категорий и публичные агрегаты — без операций и без имён.",
+        ),
     ]
     if money is None:
         blocks.append(
@@ -813,7 +965,7 @@ def money_section(money: MoneyDTO | None, *, period_label: str, historical: Mapp
             kind="muted",
         )
     )
-    return "".join(blocks)
+    return f'<article class="sheet sheet-money">{"".join(blocks)}</article>'
 
 
 def _categories(categories: Sequence[CategoryDTO], *, period_label: str, metrics: Mapping[str, Any] | None = None) -> str:
@@ -917,7 +1069,7 @@ def historical_block(historical: Mapping[str, "history.MetricView | None"], *, p
         difference = receipts.value - expenses.value
         out.append(
             f'<p class="coverage-inline">Покрытие расходов поступлениями: <strong>'
-            f'{"не применимо" if coverage is None else f"{coverage} %"}</strong>. '
+            f'{percent_text(coverage)}</strong>. '
             f"Разница: <strong>{rub_from_rubles(difference)}</strong>.</p>"
         )
     if events is not None and events.source is not None:
@@ -967,10 +1119,13 @@ def _event_link(item: PublicEventDTO) -> str:
 
 def events_section(events: EventsDTO | None, *, period_label: str, historical: Mapping[str, "history.MetricView | None"]) -> str:
     blocks: list[str] = [
-        eyebrow(f"лист · мероприятия · {period_label}"),
-        "<h1>Мероприятия подвала</h1>",
-        '<p class="lead">Публичные события называем с датой и названием, собрания — только датой и постоянной '
-        "подписью. Закрытые и служебные события остаются числом: ни названия, ни даты, ни точки в календаре.</p>",
+        section_banner(
+            "events",
+            f"Полоса · мероприятия · {period_label}",
+            "Мероприятия подвала",
+            "Публичные события называем с датой и названием, собрания — только датой и постоянной "
+            "подписью. Закрытые и служебные события остаются числом: ни названия, ни даты, ни точки в календаре.",
+        ),
     ]
 
     if events is None:
@@ -1065,7 +1220,7 @@ def events_section(events: EventsDTO | None, *, period_label: str, historical: M
         if view.source is not None:
             blocks.append(provenance(view.source))
         blocks.append(note("Разбивка исторических событий по типам в публикациях не названа, поэтому не показывается."))
-    return "".join(blocks)
+    return f'<article class="sheet sheet-events">{"".join(blocks)}</article>'
 
 
 def _int_or_dash(value: Any) -> str:
@@ -1073,7 +1228,7 @@ def _int_or_dash(value: Any) -> str:
 
 
 def _share_note(share: Any) -> str:
-    return f"доля {share} %" if share is not None else "доля не посчитана"
+    return f"доля {percent_text(share)}" if share is not None else "доля не посчитана"
 
 
 def _non_public_total(metrics: Mapping[str, Any]) -> str:
@@ -1144,10 +1299,13 @@ def calendar_grid(period_label: str, days: Mapping[str, int], *, meetings: Mappi
 
 def community_section(community: CommunityDTO | None, *, period_label: str) -> str:
     blocks: list[str] = [
-        eyebrow(f"лист · сообщество · {period_label}"),
-        "<h1>Сообщество</h1>",
-        '<p class="lead">Одна честная цифра и её дата. Подписчиков не считаем по дням и не дорисовываем линию '
-        "там, где есть всего одна точка.</p>",
+        section_banner(
+            "community",
+            f"Полоса · сообщество · {period_label}",
+            "Сообщество",
+            "Одна честная цифра и её дата. Подписчиков не считаем по дням и не дорисовываем линию "
+            "там, где есть всего одна точка.",
+        ),
     ]
     if community is None or not community.channel_points:
         blocks.append(
@@ -1194,15 +1352,18 @@ def community_section(community: CommunityDTO | None, *, period_label: str) -> s
         if metrics.get("has_gap"):
             blocks.append(note("Между точками есть пропуски: недостающие дни не восстанавливаются.", kind="warn"))
     blocks.append(f'<p>Канал: <a href="{e(history.CHANNEL_URL)}" rel="noopener">{e(history.CHANNEL_URL)}</a></p>')
-    return "".join(blocks)
+    return f'<article class="sheet sheet-community">{"".join(blocks)}</article>'
 
 
 def support_section(money: MoneyDTO | None, *, period_label: str, historical: Mapping[str, "history.MetricView | None"]) -> str:
     blocks: list[str] = [
-        eyebrow(f"листок · поддержка · {period_label}"),
-        "<h1>Поддержка</h1>",
-        '<p class="lead">Отчёты держатся на донатах и взносах коммунаров. Показываем только общие категории: '
-        "отдельные платежи, комментарии к ним и новые имена не публикуем.</p>",
+        section_banner(
+            "support",
+            f"Полоса · поддержка · {period_label}",
+            "Поддержка",
+            "Отчёты держатся на донатах и взносах коммунаров. Показываем только общие категории: "
+            "отдельные платежи, комментарии к ним и новые имена не публикуем.",
+        ),
     ]
     if money is not None:
         donation_rows = [
@@ -1252,15 +1413,18 @@ def support_section(money: MoneyDTO | None, *, period_label: str, historical: Ma
         '<p>Как поддержать: реквизиты и ссылки берём только из действующих публичных материалов проекта и здесь не выдумываем. '
         f'Смотрите <a href="{e(history.CHANNEL_URL)}" rel="noopener">публичный канал</a>.</p>'
     )
-    return "".join(blocks)
+    return f'<article class="sheet sheet-support">{"".join(blocks)}</article>'
 
 
 def chronicle_section(chronicle: ChronicleDTO | None) -> str:
     blocks: list[str] = [
-        eyebrow("лист · летопись"),
-        "<h1>Летопись</h1>",
-        '<p class="lead">Короткие записи из публичных постов: что менялось в пространстве. Анонсы не пересказываем '
-        "как свершившееся и ничего не досочиняем.</p>",
+        section_banner(
+            "chronicle",
+            "Полоса · летопись",
+            "Летопись",
+            "Короткие записи из публичных постов: что менялось в пространстве. Анонсы не пересказываем "
+            "как свершившееся и ничего не досочиняем.",
+        ),
     ]
     if chronicle is None or not chronicle.news_items:
         blocks.append(empty_state("Записей летописи за этот период нет."))
@@ -1272,7 +1436,7 @@ def chronicle_section(chronicle: ChronicleDTO | None) -> str:
                 )
             )
         )
-        return "".join(blocks)
+        return f'<article class="sheet sheet-chronicle">{"".join(blocks)}</article>'
     entries = []
     for item in chronicle.news_items:
         links = " · ".join(
@@ -1292,7 +1456,7 @@ def chronicle_section(chronicle: ChronicleDTO | None) -> str:
             "</div></li>"
         )
     blocks.append(f'<ol class="log">{"".join(entries)}</ol>')
-    return "".join(blocks)
+    return f'<article class="sheet sheet-chronicle">{"".join(blocks)}</article>'
 
 
 def field_note_rows(rows: Sequence[tuple[str, str]]) -> str:
@@ -1318,30 +1482,26 @@ def reports_index(periods: Sequence[tuple[str, str, str]], *, period: str) -> st
             label = f"{start}..{end}"
             url = f"/reports/{start}..{end}"
             kind = "групповой период"
+        # a range keeps its span: the cover font shrinks rather than breaking it
+        shown = e(label)
         items.append(
-            f'<li><a href="{e(url)}">{e(label)}</a><span class="kind">{e(kind)}</span>'
+            f'<li><span class="cover-top">РанДом Культуры · отчёт</span>'
+            f'<a href="{e(url)}">{shown}</a>'
+            f'<span class="kind">{e(kind)}</span>'
             '<span class="arrow" aria-hidden="true">→</span></li>'
         )
-    body = (
-        "".join(
-            [
-                eyebrow("лист · архив"),
-                "<h1>Архив отчётов</h1>",
-                '<p class="lead">Плотный список выпусков по датам публикаций. Каждый ведёт на постоянную ссылку; '
-                "исправления не стирают исходную версию.</p>",
-                f'<ul class="issues">{"".join(items)}</ul>',
-            ]
-        )
-        if items
-        else "".join(
-            [
-                eyebrow("лист · архив"),
-                "<h1>Архив отчётов</h1>",
-                empty_state("Опубликованных отчётов пока нет."),
-            ]
-        )
+    banner = section_banner(
+        "reports",
+        "Полоса · архив",
+        "Архив отчётов",
+        "Плотный список выпусков по датам публикаций. Каждый ведёт на постоянную ссылку; "
+        "исправления не стирают исходную версию.",
     )
-    return body
+    if items:
+        body = banner + f'<ul class="issues">{"".join(items)}</ul>'
+    else:
+        body = banner + empty_state("Опубликованных отчётов пока нет.")
+    return f'<article class="sheet sheet-reports">{body}</article>'
 
 
 PROVENANCE_LABELS = {
@@ -1375,8 +1535,13 @@ def report_page(
     covered_by: history.HistoricalReport | None = None,
 ) -> str:
     blocks: list[str] = [
-        eyebrow("лист · архив · выпуск"),
-        f"<h1>Отчёт за {e(period_label)}</h1>",
+        section_banner(
+            "reports",
+            f"Полоса · архив · выпуск · {period_label}",
+            f"Отчёт за {period_label}",
+            "Что было опубликовано за этот период и как выпуск исправлялся. Отдельного отчёта нет — "
+            "здесь об этом прямо и написано.",
+        ),
     ]
     latest = public.get("latest")
     if report is None and latest is None:
@@ -1394,7 +1559,7 @@ def report_page(
                 if covered_by.start != covered_by.end
                 else f'<p>Период покрыт отчётом {e(covered_by.label)}.</p>'
             )
-        return "".join(blocks)
+        return f'<article class="sheet sheet-reports">{"".join(blocks)}</article>'
 
     blocks.append("<h2>Что было в отчёте</h2>")
     source = latest or {}
@@ -1410,7 +1575,7 @@ def report_page(
         coverage = history.coverage_percent(source.get("receipts"), source.get("expenses"))
         blocks.append(
             f'<p class="coverage-inline">Покрытие расходов поступлениями: <strong>'
-            f'{"не применимо" if coverage is None else f"{coverage} %"}</strong>.</p>'
+            f'{percent_text(coverage)}</strong>.</p>'
         )
     if report is not None:
         blocks.append(provenance(report))
@@ -1447,7 +1612,7 @@ def report_page(
         blocks.append("<h2>Текст отчёта</h2>")
         blocks.append(f'<pre class="report-text" tabindex="0">{e(text)}</pre>')
         blocks.append(note("Текст собран только из сохранённых агрегатов снимка; факты не досочиняются."))
-    return "".join(blocks)
+    return f'<article class="sheet sheet-reports">{"".join(blocks)}</article>'
 
 
 def methodology_section(*, period: str) -> str:
@@ -1461,12 +1626,15 @@ def methodology_section(*, period: str) -> str:
         "Годовое покрытие — отношение годовых сумм, а не среднее месячных процентов.",
         "Исторические агрегаты не распределяются по месяцам и не интерполируются.",
     )
-    return "".join(
+    return '<article class="sheet sheet-methodology">' + "".join(
         [
-            eyebrow("лист · как считаем"),
-            "<h1>Без магии: правила подсчёта</h1>",
-            '<p class="lead">Восемь правил, по которым из движений по счетам получаются числа на этом сайте. '
-            "Если правило не выполняется — число не показывается.</p>",
+            section_banner(
+                "methodology",
+                "Полоса · как считаем",
+                "Без магии: правила подсчёта",
+                "Восемь правил, по которым из движений по счетам получаются числа на этом сайте. "
+                "Если правило не выполняется — число не показывается.",
+            ),
             '<ol class="rules">' + "".join(f"<li>{e(rule)}</li>" for rule in rules) + "</ol>",
             "<h2>Что считается чем</h2>",
             pairs(
@@ -1496,66 +1664,265 @@ def methodology_section(*, period: str) -> str:
             "<p>Версия методологии 1. Публичный allowlist полей и периодов. Технические коды выпуска и служебные "
             "метки состояния доступны в машинном виде — в JSON-представлении, а не в тексте листка.</p>",
         ]
+    ) + "</article>"
+
+
+# --------------------------------------------------------------------------- #
+# Home: the poster of the first screen
+# --------------------------------------------------------------------------- #
+
+HOME_TAGLINE = "Сколько стоит содержание подвала и чем оно покрыто."
+
+
+def home_headline() -> str:
+    """Главный узел главной: «А дорог ли РанДом?» из разноформатных вырезок.
+
+    Each fragment is its own scrap of paper — a yellow square with «А», a news
+    strip with the rest of the question, the red banner with the name and a torn
+    corner with the question mark — exactly as the approved mock assembles them.
+    The h1 keeps the whole phrase as its accessible name, so the collage is not a
+    picture a screen reader has to guess at.
+    """
+
+    return (
+        '<h1 class="headline" aria-label="А дорог ли РанДом?">'
+        '<span class="head-top">'
+        '<span class="scrap paper-yellow head-a" aria-hidden="true">А</span>'
+        '<span class="scrap paper-news head-dorog" aria-hidden="true">дорог ли</span>'
+        "</span>"
+        '<span class="head-bottom">'
+        '<span class="scrap paper-red head-random" aria-hidden="true">РанДом</span>'
+        '<span class="scrap paper-news head-question" aria-hidden="true">?</span>'
+        "</span></h1>"
     )
 
 
-# --------------------------------------------------------------------------- #
-# Home: the monthly leaflet
-# --------------------------------------------------------------------------- #
+def home_mast_head(period_label: str) -> str:
+    """Заголовок, тихая подпись о чём это и однострочный девиз — не слоган на пол-экрана."""
 
-def _home_strip(*, money: MoneyDTO | None, events: EventsDTO | None, community: CommunityDTO | None, historical: Mapping[str, "history.MetricView | None"]) -> str:
-    events_view = historical.get("events")
-    events_count: Any = events_view.value if events_view is not None else None
-    if events is not None:
-        events_count = events.metrics.get("total_events", events_count)
-    coverage = _coverage_of(money) if money is not None else None
-    if coverage is None and money is None:
-        receipts = historical.get("receipts")
-        expenses = historical.get("expenses")
-        if receipts is not None and expenses is not None and receipts.value is not None and expenses.value is not None:
-            coverage = history.coverage_percent(receipts.value, expenses.value)
-    subscribers = None
-    latest_on: Any = None
-    if community is not None and community.channel_points:
-        subscribers = community.metrics.get("latest_subscribers")
-        latest_on = community.metrics.get("latest_on")
-    coverage_text = "—"
-    flag = ""
-    if money is not None:
-        state = money_state(money)
-        if _coverage_is_drawable(money, state=state):
-            coverage_text = f"{coverage} %"
-            if state == PARTIAL:
-                coverage_note = "по разнесённым категориям, не по всем тратам"
-                flag = '<span class="k-flag">предв.</span>'
-            else:
-                coverage_note = "суммы разнесены полностью"
-        elif coverage is not None or money_state(money) == PARTIAL:
-            coverage_note = "пока не считаем честно"
-        else:
-            coverage_note = "категории требуют проверки"
-    elif coverage is not None:
-        coverage_text = f"{coverage} %"
-        coverage_note = "по опубликованному периоду"
-    else:
-        coverage_note = "нет опубликованного снимка"
     return (
-        '<div class="strip">'
-        f'<div class="cell"><p class="k-label">Событий за период</p>'
-        f'<p class="k-num">{e(_int_or_dash(events_count))}</p>'
-        f'<p class="k-note">состоявшихся, по календарю</p></div>'
-        f'<div class="cell"><p class="k-label">Подписчики канала</p>'
-        f'<p class="k-num">{e(_thousands(subscribers))}</p>'
-        f'<p class="k-note">{e(latest_on) if subscribers is not None else "датированных точек нет"}</p></div>'
-        f'<div class="cell"><p class="k-label">Покрытие расходов</p>'
-        f'<p class="k-num">{e(coverage_text)}{flag}</p>'
-        f'<p class="k-note">{e(coverage_note)}</p></div>'
+        home_headline()
+        + f'<p class="eyebrow intro-line">Открытая отчётность со-общественного пространства · листок за {e(period_label)}</p>'
+        + f'<p class="lead">{e(HOME_TAGLINE)}</p>'
+    )
+
+
+#: Разрешённое фото подвала в рабочем статическом контуре (ассет оператора, вне git).
+#: Порядок задаёт предпочтение: лёгкий JPEG выигрывает у PNG, если оператор выложил оба.
+PHOTO_ASSETS: tuple[str, ...] = ("basement-photo.jpg", "basement-photo.png")
+
+#: Логотип владельца у заголовка (публичный ассет, без метаданных).
+BRAND_LOGO = "brand-logo.png"
+
+#: Подпись под настоящим фото: на этом месте в макете стояла художественная заглушка.
+PHOTO_CAPTION = "Наш подвал — то самое пространство, за которое этот листок и считает."
+
+
+def visual_photo(src: str, *, alt: str = "Фотография подвала") -> str:
+    """Левая колонка главной с настоящим разрешённым фото: вырез с неровной кромкой.
+
+    ``src`` arrives only when the operator has installed the approved asset in the
+    served static contour — the photograph is deliberately not in git. The cut is
+    the mock's own torn edge (``.visual-cut``) and the crop keeps the content of
+    the frame (``object-fit: cover``), never stretching it.
+    """
+
+    return (
+        '<figure class="visual has-photo" aria-label="Фотография подвала">'
+        '<span class="understrip" aria-hidden="true"></span>'
+        f'<img class="visual-cut photo" src="{e(src)}" alt="{e(alt)}" decoding="async">'
+        f"<figcaption>{e(PHOTO_CAPTION)}</figcaption>"
+        '<span class="understrip bottom" aria-hidden="true"></span>'
+        "</figure>"
+    )
+
+
+def visual_placeholder() -> str:
+    """Запасное состояние колонки: честная рама, когда разрешённого фото нет.
+
+    The approved mock used a drawing as a stand-in. A drawing is not evidence of
+    the real space, so without the owner's photograph production shows the frame,
+    says what will stand there and waits for the asset to be installed.
+    """
+
+    return (
+        '<figure class="visual" aria-label="Место для фотографии пространства">'
+        '<span class="understrip" aria-hidden="true"></span>'
+        '<div class="visual-cut" role="img" '
+        'aria-label="Место под фотографию подвала: художественную заглушку макета на боевом сайте не публикуем">'
+        '<span class="cut-mark" aria-hidden="true">✳</span></div>'
+        "<figcaption>Фотография подвала появится здесь, когда будет разрешённый к публикации снимок. "
+        "Заглушку из макета не показываем.</figcaption>"
+        '<span class="understrip bottom" aria-hidden="true"></span>'
+        "</figure>"
+    )
+
+
+def _year_of(period_label: str) -> str:
+    return period_label.split("-")[0] if period_label else ""
+
+
+def subscriber_delta(
+    points: Sequence[Any], *, days: int = 30
+) -> tuple[int | None, str | None, int | None]:
+    """Прирост подписчиков за полные ``days`` суток по датированным точкам.
+
+    Only real snapshots count: the base point must lie at least ``days`` before the
+    latest one. A gap in the middle is not filled in and, when the history is
+    shorter than the window, the answer is ``(None, None, None)`` — the poster then
+    says so instead of drawing a growth of its own.
+
+    The third value is the length of the interval the change actually covers. A
+    dated history rarely has a point exactly ``days`` back (points arrive with the
+    monthly release), so the base can be older than the window; the poster prints
+    that real interval instead of labelling a rolled-over change «за 30 дней».
+    """
+
+    if len(points) < 2:
+        return None, None, None
+    ordered = sorted(points, key=lambda point: point.on)
+    latest = ordered[-1]
+    cutoff = latest.on - timedelta(days=days)
+    base = None
+    for point in ordered[:-1]:
+        if point.on <= cutoff:
+            base = point
+    if base is None:
+        return None, None, None
+    return latest.subscribers - base.subscribers, base.on.isoformat(), (latest.on - base.on).days
+
+
+def _delta_line(
+    delta: int | None, base_on: str | None, *, span_days: int | None = None, days: int = 30
+) -> str:
+    """Строка изменения: настоящий интервал базы, а не всегда «за 30 дней»."""
+
+    if delta is None:
+        return f"прироста за {days} суток нет: истории не хватает"
+    span = span_days or days
+    arrow = "↗" if delta >= 0 else "↘"
+    sign = "+" if delta >= 0 else "−"
+    tail = f" (с {base_on})" if base_on else ""
+    return f"{arrow} {sign}{_thousands(abs(delta))} за {span} {plural(span, 'день', 'дня', 'дней')}{tail}"
+
+
+def _figure_scrap(paper: str, value: int | None) -> str:
+    """Бумажная цифра показателя; честное «нет данных» — та же бумага, но мельче.
+
+    A missing value is a word, not a figure: at the poster's number size «нет
+    данных» is wider than its own column and ran off the sheet at every width
+    (measured in a real browser), so the honest state carries a smaller cut. The
+    paper, the rotation and the colour are unchanged — this is the same scrap.
+    """
+
+    shown = _thousands(value)
+    wide = " wide" if value is None else ""
+    return f'<span class="scrap {paper} number{wide}">{e(shown)}</span>'
+
+
+def _poster_figures(
+    *,
+    period_label: str,
+    events_current: int | None,
+    events_previous: int | None,
+    subscribers: int | None,
+    subscribers_on: str | None,
+    delta: int | None,
+    delta_from: str | None,
+    delta_span_days: int | None = None,
+) -> str:
+    """Две бумажные цифры справа: события этого месяца и подписчики сегодня."""
+
+    month = month_in(period_label)
+    if month is not None:
+        events_tag = f"{plural(events_current, 'событие', 'события', 'событий')} в {month}".upper()
+    else:
+        events_tag = "событий за период"
+    if events_previous is None:
+        events_sub = "за прошлый календарный месяц данных нет"
+    else:
+        events_sub = f"в прошлом месяце: {_thousands(events_previous)}"
+    subs_tag = plural(subscribers, "подписчик", "подписчика", "подписчиков").upper()
+    if subscribers is None:
+        subs_sub = "датированных точек нет"
+    else:
+        subs_sub = _delta_line(delta, delta_from, span_days=delta_span_days)
+        if subscribers_on:
+            subs_sub += f" · точка на {subscribers_on}"
+    return (
+        '<div class="figures">'
+        '<section class="metric events" id="events" aria-labelledby="events-label">'
+        f'{_figure_scrap("paper-purple", events_current)}'
+        f'<span id="events-label" class="scrap paper-news tag">{e(events_tag)}</span>'
+        f'<span class="subline">{e(events_sub)}</span></section>'
+        '<section class="metric subs" id="community" aria-labelledby="subs-label">'
+        f'{_figure_scrap("paper-yellow", subscribers)}'
+        f'<span id="subs-label" class="scrap paper-news tag">{e(subs_tag)}</span>'
+        f'<span class="subline">{e(subs_sub)}</span></section>'
         "</div>"
     )
 
 
+def announcements_block(items: Sequence[Mapping[str, Any]] = ()) -> str:
+    """«ЧТО ПЕРЕСЫЛАЛИ»: три лучших публичных анонса по числу пересылок за 30 суток.
+
+    The counter itself is the whole point of the block, so it is never guessed: a
+    card is printed only for a record that carries a real number of forwards *and*
+    a real link (``safe_url`` accepted it, so a ``javascript:`` document never
+    becomes a card), largest first, at most three. Chatbot history does not expose
+    forwarding counters (docs/INGEST.md), so while no such records exist the block
+    names the gap instead of inventing posts, ranks or numbers.
+    """
+
+    usable = [
+        (item, safe_url(item.get("url")))
+        for item in items
+        if item.get("forwards") is not None
+    ]
+    with_numbers = [(item, url) for item, url in usable if url]
+    ordered = sorted(with_numbers, key=lambda row: -int(row[0]["forwards"]))[:3]
+    heading = (
+        '<section class="trend" id="announcements" aria-labelledby="trend-title">'
+        '<div class="stripe-heading"><h2 id="trend-title">Что пересылали</h2>'
+        '<span class="t30">Топ-3 анонса · за последние 30 суток</span></div>'
+    )
+    if not ordered:
+        return (
+            heading
+            + '<div class="announce-empty">'
+            + state_block(
+                "Счётчиков пересылок в публичном выпуске пока нет",
+                "Источник публичных постов не отдаёт число пересылок, поэтому рейтинг анонсов не строится: "
+                "ни посты, ни места, ни счётчики здесь не выдумываются. Как только счётчики появятся в разрешённых "
+                "данных, блок покажет настоящий топ-3 за последние 30 суток.",
+                kind="warn",
+            )
+            + '<p class="cut-note">Пока честнее показать пробел, чем нарисовать рейтинг.</p>'
+            + "</div></section>"
+        )
+    cards = []
+    for index, (item, url) in enumerate(ordered, start=1):
+        title = str(item.get("title") or "без названия")
+        forwards = _thousands(int(item["forwards"]))
+        cards.append(
+            f'<a class="forward" href="{e(url)}" rel="noopener">'
+            f'<span class="rank">№ {index:02d}</span>'
+            f'<span class="post-title">{e(title)}</span>'
+            '<span class="post-bottom">'
+            f'<span class="forwards">↗ {e(forwards)} пересылок</span>'
+            '<span class="arrows" aria-hidden="true">↗</span></span></a>'
+        )
+    return heading + f'<div class="trend-grid">{"".join(cards)}</div></section>'
+
+
 def _home_money_block(*, money: MoneyDTO | None, historical: Mapping[str, "history.MetricView | None"]) -> str:
-    """The money answer of the first screen: a state, then the numbers it allows."""
+    """Денежный ответ первого экрана: состояние, затем суммы, которые оно разрешает.
+
+    The four money states stay exactly as the leaflet told them apart: an
+    unallocated part is never printed as a classified ``0 ₽``, a confirmed zero
+    stays a plain ``0 ₽``, an absent snapshot is an explained empty state and a
+    historical aggregate carries its own caveat.
+    """
 
     if money is None:
         receipts = historical.get("receipts")
@@ -1575,7 +1942,7 @@ def _home_money_block(*, money: MoneyDTO | None, historical: Mapping[str, "histo
             coverage = history.coverage_percent(receipts.value, expenses.value)
             out.append(
                 f'<p class="coverage-inline">Покрытие расходов поступлениями: <strong>'
-                f'{"не применимо" if coverage is None else f"{coverage} %"}</strong> по опубликованному периоду.</p>'
+                f'{percent_text(coverage)}</strong> по опубликованному периоду.</p>'
             )
         out.append(note(history.NO_BALANCE_NOTE))
         return "".join(out)
@@ -1594,54 +1961,67 @@ def _home_money_block(*, money: MoneyDTO | None, historical: Mapping[str, "histo
             "Период полный, суммы разнесены, итог расходов — ровно ноль. Это подтверждённый ноль, а не отсутствие данных.",
             kind="ok",
         )
-    return head + money_fields(money, state=state) + money_coverage_block(money, state=state)
+    return head + money_coverage_block(money, state=state, alt_collapsed=True) + money_fields(money, state=state)
 
 
-def _home_events(events: EventsDTO | None, historical: Mapping[str, "history.MetricView | None"]) -> str:
-    if events is not None and events.public_events:
-        rows = [(item.on.isoformat(), EVENT_TYPE_LABELS.get(item.type, item.type), item.title) for item in events.public_events[:3]]
-        total = events.metrics.get("total_events")
-        note_text = "Показаны только публичные события."
-        if total is not None:
-            note_text += f" Всего за период — {total}, включая закрытые и служебные, которые не раскрываются."
-        return fields(rows, note=note_text)
-    view = historical.get("events")
-    if events is None and view is not None and view.value is not None:
-        return fields([("Состоялось мероприятий (опубликованный агрегат)", str(view.value))])
-    if events is not None:
-        return empty_state("За этот период публичных событий в календаре нет.")
-    return empty_state("Событий за этот период нет в опубликованных данных.")
+def home_finance(
+    *,
+    money: MoneyDTO | None,
+    period_label: str,
+    historical: Mapping[str, "history.MetricView | None"],
+) -> str:
+    """«ПОКРЫЛИ РАСХОДЫ»: крупный процент, полоса покрытия и газетная ведомость."""
 
-
-def next_links(period: str) -> str:
-    """The sheet's own short table of contents, as real links (not decoration)."""
-
-    rows = (
-        ("/money", "Деньги", "расходы, поступления, остаток"),
-        ("/events", "Мероприятия", "календарь и типы событий"),
-        ("/community", "Сообщество", "подписчики и их датированные точки"),
-        ("/chronicle", "Летопись", "записи о том, что менялось"),
-        ("/reports", "Архив", "все выпуски по датам"),
-        ("/methodology", "Как считаем", "правила и формулы"),
+    state = money_state(money) if money is not None else None
+    coverage = _coverage_of(money) if money is not None else None
+    drawable = money is not None and _coverage_is_drawable(money, state=state or "")
+    if coverage is None and money is None:
+        receipts = historical.get("receipts")
+        expenses = historical.get("expenses")
+        if receipts is not None and expenses is not None and receipts.value is not None and expenses.value is not None:
+            coverage = history.coverage_percent(receipts.value, expenses.value)
+    if drawable:
+        percent = percent_text(coverage)
+        caption = "своими поступлениями"
+    elif money is None and coverage is not None:
+        percent = percent_text(coverage)
+        caption = "по опубликованному периоду"
+    else:
+        percent = "—"
+        caption = "процент пока не считаем честно"
+    ledger = ""
+    if money is not None and state != PARTIAL:
+        # a partial snapshot has no classified sum to put in the ledger: printing
+        # «покрыто: 0,00 ₽» for it is exactly the lie the states exist to prevent
+        compensation = money.metrics.get("compensation_kopecks")
+        expense = money.metrics.get("expense_kopecks")
+        if compensation is not None and expense is not None:
+            ledger = (
+                '<p class="fin-ledger">'
+                f'<span>покрыто: <b>{e(rub_from_kopecks(compensation))}</b></span>'
+                f'<span>расходы: <b>{e(rub_from_kopecks(expense))}</b></span></p>'
+            )
+    period_line = f"листок за {period_label}"
+    if money is not None:
+        period_line += f" · данные на {money.as_of.isoformat()}"
+    note_line = ""
+    if money is not None:
+        uncovered = money.metrics.get("uncovered_kopecks")
+        if state == PARTIAL:
+            note_line = "Расходы периода неполны · доли в ведомости — от поступлений"
+        elif uncovered is not None:
+            note_line = f"Не покрыто: {rub_from_kopecks(uncovered)} · доли в ведомости — от поступлений"
+    return (
+        '<section class="finance" id="money" aria-label="Покрытие расходов">'
+        '<header class="finance-heading"><h2>Покрыли расходы</h2>'
+        f'<span class="financial-period">{e(period_line)}</span></header>'
+        f'<div class="fin-top"><strong class="fin-percent">{e(percent)}</strong>'
+        f'<span class="fin-caption">{e(caption)}</span></div>'
+        f"{ledger}"
+        + _home_money_block(money=money, historical=historical)
+        + (f'<p class="financial-note">{e(note_line)}</p>' if note_line else "")
+        + "</section>"
     )
-    items = "".join(
-        f'<li><a href="{e(href)}?period={e(period)}">{e(label)}</a><span class="kind">{e(note)}</span></li>'
-        for href, label, note in rows
-    )
-    return f'<ul class="issues">{"".join(items)}</ul>'
-
-
-def _home_chronicle(chronicle: ChronicleDTO | None) -> str:
-    if chronicle is None or not chronicle.news_items:
-        return (
-            empty_state("Новых записей летописи за этот период нет.")
-            + caption("Летопись собирается из публичных постов; когда записей нет — здесь так и написано, а не «0 новостей».")
-        )
-    rows = [
-        (item.published_on.isoformat(), item.category, item.title)
-        for item in chronicle.news_items[:3]
-    ]
-    return fields(rows, note="Полные записи — в разделе «Летопись».")
 
 
 def home_section(
@@ -1652,26 +2032,52 @@ def home_section(
     community: CommunityDTO | None,
     chronicle: ChronicleDTO | None,
     historical: Mapping[str, "history.MetricView | None"],
+    events_previous: int | None = None,
+    subscribers_extra: Sequence[Any] = (),
+    announcements: Sequence[Mapping[str, Any]] = (),
+    photo_url: str | None = None,
 ) -> str:
-    blocks: list[str] = [
-        eyebrow(f"листок за {period_label}"),
-        "<h1>А дорог ли РанДом?</h1>",
-        '<p class="lead">Короткая месячная сводка: сколько стоило содержание подвала, чем это покрыто и что здесь было. '
-        "Цифры — за выбранный период, а не за всё время.</p>",
-        _home_strip(money=money, events=events, community=community, historical=historical),
-        "<h2>Деньги периода</h2>",
-        _home_money_block(money=money, historical=historical),
-    ]
-    events_html = _home_events(events, historical)
-    blocks.extend(["<h2>Что было в подвале</h2>", events_html])
-    blocks.extend(["<h2>Летопись</h2>", _home_chronicle(chronicle)])
-    blocks.extend(
-        [
-            "<h2>Как читать листок</h2>",
-            pairs(STATE_RULES, caption_text="Одно и то же число читается по-разному: «не знаем» и «ноль» — разные факты."),
-            "<h2>Куда дальше</h2>",
-            next_links(period_label),
-            f'<p><a class="download" href="/api/public/export/categories.csv?period=all">Публичные агрегаты в CSV</a></p>',
-        ]
+    """Один живой плакат: заголовок, фото подвала, две бумажные цифры, бухгалтерия, анонсы.
+
+    ``photo_url`` is the approved basement photograph when the operator has
+    installed the asset in the served static contour; without it the left column
+    keeps the honest frame. Where the data cannot answer, the sheet says so in
+    words — an invented number here would be the exact failure the approved design
+    forbids.
+    """
+
+    events_count: Any = None
+    if events is not None:
+        events_count = events.metrics.get("total_events")
+    if events_count is None:
+        view = historical.get("events")
+        events_count = None if view is None else view.value
+    subscribers: int | None = None
+    subscribers_on: str | None = None
+    points: list[Any] = []
+    if community is not None:
+        subscribers = community.metrics.get("latest_subscribers")
+        subscribers_on = community.metrics.get("latest_on")
+        points = list(community.channel_points)
+    points.extend(subscribers_extra)
+    delta, delta_from, delta_span = subscriber_delta(points)
+    return (
+        '<div id="home">'
+        '<section class="mainstage" aria-label="Основные показатели листка">'
+        + (visual_photo(photo_url) if photo_url else visual_placeholder())
+        + '<div class="measurements">'
+        + _poster_figures(
+            period_label=period_label,
+            events_current=events_count,
+            events_previous=events_previous,
+            subscribers=subscribers,
+            subscribers_on=subscribers_on,
+            delta=delta,
+            delta_from=delta_from,
+            delta_span_days=delta_span,
+        )
+        + home_finance(money=money, period_label=period_label, historical=historical)
+        + "</div></section>"
+        + announcements_block(announcements)
+        + "</div>"
     )
-    return "".join(blocks)

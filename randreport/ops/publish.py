@@ -57,8 +57,14 @@ def publish_release(
                 if "/" in name or "\\" in name or name in (".", ".."):
                     raise PublishError(f"invalid release file name {name!r}")
                 (temp_dir / name).write_text(content, encoding="utf-8")
+                # mkdtemp starts at 0700 and the write mode rides on the umask;
+                # a release must be readable by the web server, so pin public
+                # modes regardless of either (card t_1c024aa9).
+                os.chmod(temp_dir / name, 0o644)
             manifest = {"release_id": release_id, "files": sorted(files)}
             (temp_dir / "manifest.json").write_text(json.dumps(manifest, sort_keys=True), encoding="utf-8")
+            os.chmod(temp_dir / "manifest.json", 0o644)
+            os.chmod(temp_dir, 0o755)
             os.replace(temp_dir, target)
         except BaseException:
             shutil.rmtree(temp_dir, ignore_errors=True)
