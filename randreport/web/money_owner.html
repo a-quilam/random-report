@@ -8,36 +8,38 @@
 <link rel="stylesheet" href="/static/money.css">
 </head>
 <body>
-<a class="skip" href="#content">К данным отчёта</a>
+<a class="skip" href="#main">К данным отчёта</a>
 <div class="page">
   <header class="topbar">
-    <a class="brand" href="/?period=$period" aria-label="На главную — РанДом Культуры">$brand<span class="brand-paper paper sand">РанДом<br>Культуры</span></a>
+    <a class="brand" href="/" aria-label="На главную — РанДом Культуры">$brand</a>
     <div class="topright">
       <nav class="nav" aria-label="Разделы РанДома">
-        <a href="/?period=$period" class="nav-slip paper news">Главная</a>
-        <a href="/money?period=$period" aria-current="page" class="nav-slip paper red">Деньги</a>
-        <a href="/events?period=$period" class="nav-slip paper sand">Мероприятия</a>
+        <a href="/" class="nav-slip paper news">Главная</a>
+        <a href="/money?period=$period" aria-current="page" class="nav-slip paper yellow">Деньги</a>
+        <a href="/events?period=$period" class="nav-slip paper news">Мероприятия</a>
         <a href="/community?period=$period" class="nav-slip paper lilac">Сообщество</a>
-        <a href="/support?period=$period" class="nav-slip paper yellow">Поддержка</a>
+        <a href="/support?period=$period" class="nav-slip paper sand">Поддержка</a>
+        <a href="/chronicle?period=$period" class="nav-slip paper red">Летопись</a>
         <a href="/reports?period=$period" class="nav-slip paper news">Архив</a>
+        <a href="/methodology?period=$period" class="nav-slip paper yellow">Методология</a>
       </nav>
       <div class="edition"><span class="edition-mark">*</span> Открытая отчётность · обновление в 03:00 МСК</div>
+      <form aria-label="Период данных" class="period-plate" action="/money" method="get">
+        <label for="period-select">ПЕРИОД</label>
+        <span class="period-select-wrap"><select id="period-select" name="period" aria-label="Выбор периода">$options</select></span>
+        <button type="submit">Показать</button>
+        <span class="period-date">$as_of</span>
+      </form>
     </div>
   </header>
 
-  <main id="content" tabindex="-1">
+  <main id="main" tabindex="-1">
     <section class="hero" aria-labelledby="money-title">
       <div class="hero-head">
         <p class="small-rubric">Лист № 02 / содержим подвал вместе</p>
         <h1 id="money-title" class="cut-title"><span class="title-d paper yellow">Д</span><span class="title-middle paper news">ЕНЬ</span><span class="title-end paper red">ГИ</span><span class="title-stop" aria-hidden="true">.</span></h1>
         <p class="one-liner">Что стоит наш подвал — и кто за него платит?</p>
       </div>
-      <form class="period-plate" action="/money" method="get">
-        <span class="period-tape" aria-hidden="true"></span>
-        <label for="period-select">ОТЧЁТ ЗА</label>
-        <select id="period-select" name="period">$options</select>
-        <button type="submit">Показать</button><span class="period-date">$as_of</span>
-      </form>
 
       <div class="hero-core">
         <div class="measure">
@@ -61,18 +63,18 @@
       <div class="amount-flow amount-in">
         <div class="amount-word paper yellow">ПРИШЛО</div>
         <strong class="huge-amount" id="income-sum" data-field="compensation_kopecks">$income</strong>
-        <div class="amount-suffix">поступления от деятельности и донатов <details class="explain"><summary class="inline-help" aria-label="Пояснение о поступлениях">?</summary><p>Не включает взносы коммунаров на содержание и переводы между своими счетами.</p></details></div>
+        <div class="amount-suffix">от деятельности и поддержки <details class="explain"><summary class="inline-help" aria-label="Пояснение о поступлениях">?</summary><p>Не включает взносы коммунаров на содержание и переводы между своими счетами.</p></details></div>
       </div>
       <div class="cross-strike" aria-hidden="true"></div>
       <div class="amount-flow amount-out">
         <div class="amount-word paper news">УШЛО</div>
         <strong class="huge-amount" id="expense-sum" data-field="expense_kopecks">$expense</strong>
-        <div class="amount-suffix">расходы без возвратов покупок</div>
+        <div class="amount-suffix">на содержание пространства</div>
       </div>
-      <p class="flow-footnote" id="flow-footnote">Субсидии коммунаров в поступления не включены: иначе самоокупаемость будет нарисованной.</p>
+      <p class="flow-footnote" id="flow-footnote">$footnote</p>
     </section>
 
-    <section class="category-layout" aria-label="Поступления и расходы по категориям">
+    <section class="category-layout" aria-labelledby="ledger-heading">
       <div class="ledger-side">
         <div class="section-heading"><h2 id="ledger-heading">ОТКУДА?</h2><span class="small-clipping paper lilac">Поступления</span></div>
         <div class="category-paper income-paper">
@@ -87,14 +89,13 @@
           <div class="ledger-note">НА ЧТО УХОДЯТ ДЕНЬГИ ПОДВАЛА</div>
           <div id="outgoing-categories" class="category-rows">$outgoing</div>
         </div>
-        <p class="under-paper">Раскрой подсказку у категории, чтобы узнать подробности.</p>
+        <p class="under-paper">Нажми на строку — увидишь пояснение.</p>
       </div>
     </section>
 
-    <section class="cash-layout" aria-label="Дополнительные финансовые сведения">
+    <section class="cash-layout" aria-label="Фактические взносы коммунаров">
       <div class="subsidy-wedge"><span class="subsidy-heading">А КОММУНАРЫ?</span><strong id="subsidy-value" data-field="subsidy_kopecks">$subsidy</strong><span id="subsidy-note">$subsidy_note</span></div>
-      <div class="balance-wedge"><span class="balance-heading">ОСТАТОК В КАССЕ</span><strong id="balance-value" data-field="balance_kopecks">$balance</strong><details class="explain"><summary class="balance-whatis">ЭТО НЕ ПРИБЫЛЬ ↗</summary><p>Это деньги на счетах РанДома на дату снимка. Они могут быть предназначены для аренды или других обязательств. Остаток — не прибыль и не свободный резерв.</p></details></div>
-      <div class="cash-scratch" aria-hidden="true"></div>
+      <aside class="subsidy-explain"><span class="subsidy-caption">ПРО ВЗНОСЫ</span><p>Это реальные деньги коммунаров на содержание пространства. В процент покрытия расходов они не входят.</p></aside>
     </section>
 
     <section class="trend-section" aria-labelledby="trend-heading">
@@ -103,12 +104,21 @@
     </section>
 
   </main>
-    <footer class="endnote">
-      <div class="end-colophon">ДЕНЬГИ — ЭТО НЕ ВЕСЬ РАНДОМ.<br>НО БЕЗ НИХ ПОДВАЛА НЕ БУДЕТ.</div>
-      <div class="foot-links"><a href="/methodology?period=$period">Как мы считаем ↗</a>$csv</div>
-      <details class="audit-details"><summary>Что известно и чего пока не знаем?</summary><div id="audit-info">$audit</div></details>
-      <p class="copyright">РанДом Культуры · данные Zenmoney · одна синхронизация в сутки в 03:00 МСК</p>
-    </footer>
+  <footer class="endnote">
+    <div class="foot-links"><a href="/methodology?period=$period">Как мы считаем ↗</a>$csv</div>
+    <details class="audit-details"><summary>Что известно и чего пока не знаем?</summary><div id="audit-info">$audit</div></details>
+    <nav aria-label="Разделы РанДома внизу страницы" class="nav nav-bottom">
+      <a href="/" class="nav-slip paper news">Главная</a>
+      <a href="/money?period=$period" aria-current="page" class="nav-slip paper yellow">Деньги</a>
+      <a href="/events?period=$period" class="nav-slip paper news">Мероприятия</a>
+      <a href="/community?period=$period" class="nav-slip paper lilac">Сообщество</a>
+      <a href="/support?period=$period" class="nav-slip paper sand">Поддержка</a>
+      <a href="/chronicle?period=$period" class="nav-slip paper red">Летопись</a>
+      <a href="/reports?period=$period" class="nav-slip paper news">Архив</a>
+      <a href="/methodology?period=$period" class="nav-slip paper yellow">Методология</a>
+    </nav>
+    <p class="copyright">РанДом Культуры · данные Zenmoney · одна синхронизация в сутки в 03:00 МСК</p>
+  </footer>
 </div>
 </body>
 </html>

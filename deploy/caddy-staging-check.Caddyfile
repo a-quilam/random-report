@@ -1,0 +1,34 @@
+# Изолированная проверка HTTPS на loopback (docs/DEPLOYMENT.md §5).
+# НЕ устанавливать и не включать как службу; не заменять системный /etc/caddy/Caddyfile.
+# Запуск только вручную, с отдельными XDG-каталогами:
+#   XDG_CONFIG_HOME=<dir>/config XDG_DATA_HOME=<dir>/data \
+#   caddy run --config deploy/caddy-staging-check.Caddyfile --adapter caddyfile
+# Слушает только 127.0.0.1; `tls internal` выпускает локальный сертификат,
+# поэтому боевой домен и ACME здесь не затрагиваются.
+#
+# ВНИМАНИЕ: `tls internal` ставит локальный корневой CA в системное доверенное
+# хранилище. После проверки снять:
+#   sudo rm -f /usr/local/share/ca-certificates/Caddy_Local_Authority_*.crt
+#   sudo update-ca-certificates --fresh
+#   rm -rf ~/.local/share/caddy
+# (docs/DEPLOYMENT.md §5).
+
+{
+	admin off
+	auto_https disable_redirects
+}
+
+# Публичный сайт: python -m randreport.web serve --host 127.0.0.1 --port 8099
+https://127.0.0.1:8443 {
+	tls internal
+	reverse_proxy 127.0.0.1:8099
+}
+
+# Редакционный стол: python -m randreport.admin serve --host 127.0.0.1 --port 8098
+https://127.0.0.1:8444 {
+	tls internal
+	reverse_proxy 127.0.0.1:8098
+}
+
+# При боевой выкладке HSTS ставит терминатор, а не приложение (docs/DEPLOYMENT.md §5):
+# header Strict-Transport-Security "max-age=31536000; includeSubDomains"

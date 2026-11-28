@@ -1,0 +1,30 @@
+# Шаблон. Ночной сбор: единственный суточный запуск в 03:00 Europe/Moscow.
+# Не устанавливать до выбора сервера и завершения staging (docs/DEPLOYMENT.md).
+#
+# Секреты источников (Zenmoney/Teamup/Telegram) приходят только отсюда, из
+# локального EnvironmentFile сервисного пользователя с правами 0600; в командной
+# строке токенов нет. Это единственный процесс, который пишет в приватную БД и в
+# каталог релиза.
+
+[Unit]
+Description=RanDom nightly source sync and publication (03:00 Europe/Moscow)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=randreport
+Group=randreport
+WorkingDirectory=/opt/randreport
+EnvironmentFile=/etc/randreport/randreport.env
+ExecStart=/opt/randreport/.venv/bin/python -m randreport.ops.cli run
+# Один логический запуск; ручной аварийный повтор внутри того же дня не создаёт второй снимок.
+TimeoutStartSec=30min
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/var/lib/randreport /var/www/randreport

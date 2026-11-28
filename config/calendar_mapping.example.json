@@ -1,0 +1,29 @@
+{
+  "_comment": "Пример конфигурации календаря только по устойчивым ID подкалендарей. Реальных значений здесь нет: это placeholders. Тот же формат хранит редакционный стол (таблица event_type_mapping) и читает публичная сборка (randreport/web/build.py).",
+  "version": "calendar-example-1",
+  "subcalendar_types": {
+    "placeholder-sub-open": "open",
+    "placeholder-sub-registration": "open_by_registration",
+    "placeholder-sub-closed": "closed",
+    "placeholder-sub-internal": "internal_meeting",
+    "placeholder-sub-preparation": "preparation"
+  },
+  "private_subcalendars": [
+    "placeholder-sub-closed",
+    "placeholder-sub-internal"
+  ],
+  "excluded_subcalendars": [
+    "placeholder-sub-excluded"
+  ],
+  "meeting_subcalendars": [
+    "placeholder-sub-meetings"
+  ],
+  "rent_subcalendars": [
+    "placeholder-sub-rent"
+  ],
+  "meeting_titles": [
+    "Собрания"
+  ],
+  "meeting_label": "Собрание",
+  "meeting_match": "exact"
+}

@@ -1,0 +1,15 @@
+# Шаблон. Время задано явно в Europe/Moscow, не в часовом поясе хоста.
+# Проверить: systemd-analyze calendar '*-*-* 03:00:00 Europe/Moscow'
+[Unit]
+Description=RanDom nightly sync timer (03:00 Europe/Moscow)
+
+[Timer]
+OnCalendar=*-*-* 03:00:00 Europe/Moscow
+# Catch-up: восстановление пропущенного суточного цикла после выключения,
+# а не новый плановый опрос.
+Persistent=true
+RandomizedDelaySec=0
+Unit=randreport-sync.service
+
+[Install]
+WantedBy=timers.target

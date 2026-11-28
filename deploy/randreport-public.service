@@ -1,0 +1,52 @@
+# Шаблон. Публичный процесс: без токенов и без доступа к приватной БД.
+# Не устанавливать до выбора сервера и завершения staging (docs/DEPLOYMENT.md).
+#
+# Инвариант изоляции. Этот процесс ВООБЩЕ не читает приватную БД и не получает
+# ни одного секрета источника:
+#   * нет EnvironmentFile — токены Zenmoney/Teamup/Telegram сюда не попадают;
+#   * RANREPORT_DB не задан, и `randreport.web serve` игнорирует его в любом
+#     случае (см. randreport/web/__main__.py) — страницы строятся из
+#     опубликованного allowlist-хранилища релиза (reports.json и разделы);
+#   * каталог релиза подключён только для чтения.
+# Нарушение любого из этих пунктов ломает тесты tests/test_ops_isolation.py.
+
+[Unit]
+Description=RanDom public site (loopback, allowlist release store only)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=randreport
+Group=randreport
+WorkingDirectory=/opt/randreport
+
+# Никакого EnvironmentFile и никаких токенов: только адрес, порт и каталог релиза.
+Environment=RANREPORT_HOST=127.0.0.1
+Environment=RANREPORT_PORT=8099
+Environment=RANREPORT_RELEASE_DIR=/var/www/randreport
+
+# loopback по умолчанию; внешняя публикация запрещена без двойного явного отказа
+ExecStart=/opt/randreport/.venv/bin/python -m randreport.web serve --host 127.0.0.1 --port 8099
+
+Restart=always
+RestartSec=3
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+ProtectKernelModules=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+# публичный процесс только читает релиз и ничего не пишет
+ReadOnlyPaths=/var/www/randreport
+# нет ни одного ReadWritePaths: записывать нечего
+
+[Install]
+WantedBy=multi-user.target

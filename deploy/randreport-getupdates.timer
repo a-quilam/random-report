@@ -1,0 +1,15 @@
+# Шаблон. Опрос приёма каждые 10 минут: getUpdates хранит обновления не дольше
+# 24 часов, поэтому очередь выгребается часто, а не раз в сутки.
+# Проверить: systemd-analyze calendar '*-*-* *:00/10:00'
+[Unit]
+Description=RanDom getUpdates poll timer (every 10 minutes)
+
+[Timer]
+OnCalendar=*-*-* *:00/10:00
+# Догон пропущенного опроса после выключения; нового планового опроса не создаёт.
+Persistent=true
+RandomizedDelaySec=30
+Unit=randreport-getupdates.service
+
+[Install]
+WantedBy=timers.target

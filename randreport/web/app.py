@@ -355,6 +355,19 @@ class PublicSite:
 
         return f"/static/{render.BRAND_LOGO}" if (self.static_dir / render.BRAND_LOGO).is_file() else None
 
+    def _money_logo_url(self) -> str | None:
+        """Адрес логотипа владельца именно для листа «Деньги».
+
+        The approved v1.2 sheet mounts the owner's original artwork
+        (``brand-real-logo.webp``); the home poster keeps its own approved mark.
+        Without the asset the sheet falls back to the shipped brand logo.
+        """
+
+        preferred = "brand-real-logo.webp"
+        if (self.static_dir / preferred).is_file():
+            return f"/static/{preferred}"
+        return self._brand_logo_url()
+
     def _home(self, period: Period) -> str:
         release = self.release_for(period)
         money = release.money if release else None
@@ -447,7 +460,7 @@ class PublicSite:
                 months.append((label, money_owner_data(item.money)))
         return page(period=period, periods=periods, money=release.money if release else None, months=months,
                     historical=self.historical_views(period), status=self._status_for(period),
-                    photo_url=self._photo_url(), logo_url=self._brand_logo_url())
+                    photo_url=self._photo_url(), logo_url=self._money_logo_url())
 
     def _events(self, period: Period) -> tuple[str, str | None]:
         release = self.release_for(period)

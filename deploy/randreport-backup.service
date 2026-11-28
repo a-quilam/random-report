@@ -1,0 +1,21 @@
+# Шаблон. Ежедневный зашифрованный бэкап + проверка восстановления + retention.
+# Не устанавливать до выбора сервера (docs/DEPLOYMENT.md §6).
+[Unit]
+Description=RanDom encrypted backup, restore check and retention
+
+[Service]
+Type=oneshot
+User=randreport
+Group=randreport
+WorkingDirectory=/opt/randreport
+# пароль шифрования и путь бэкапов — из локального store с правами 0600
+EnvironmentFile=/etc/randreport/backup.env
+ExecStart=/opt/randreport/deploy/randreport-backup.sh
+TimeoutStartSec=20min
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+ReadWritePaths=/var/lib/randreport /var/backups/randreport

@@ -1,0 +1,13 @@
+# Шаблон. Бэкап идёт после ночной сборки, в 04:00 Europe/Moscow (явный TZ).
+# Проверить: systemd-analyze calendar '*-*-* 04:00:00 Europe/Moscow'
+[Unit]
+Description=RanDom encrypted backup timer (04:00 Europe/Moscow)
+
+[Timer]
+OnCalendar=*-*-* 04:00:00 Europe/Moscow
+Persistent=true
+RandomizedDelaySec=0
+Unit=randreport-backup.service
+
+[Install]
+WantedBy=timers.target

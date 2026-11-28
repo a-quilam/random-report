@@ -13,6 +13,7 @@ class CategoryRow:
     label: str
     amount_kopecks: int
     hint: str | None
+    share_percent: str | None = None
 
 
 @dataclass(frozen=True)
@@ -75,7 +76,8 @@ def _rows(money: MoneyDTO, direction: str) -> tuple[CategoryRow, ...]:
             continue
         identity = (category.key, category.bucket)
         if identity not in seen:
-            rows.append(CategoryRow(category.label, category.amount_kopecks, category.hint))
+            share = str(category.share_percent).strip() if category.share_percent is not None else None
+            rows.append(CategoryRow(category.label, category.amount_kopecks, category.hint, share or None))
             seen.add(identity)
     return tuple(rows)
 

@@ -1,0 +1,41 @@
+# Шаблон. Закрытый редакционный стол: loopback, секреты из локального store.
+# Не устанавливать до согласования OIDC и списка коммунаров (docs/DEPLOYMENT.md, ADMIN.md).
+#
+# Стол — единственный процесс с секретами (подпись cookie, OIDC client id,
+# резервный bot token). Они лежат в /etc/randreport/admin.env с правами 0600 и не
+# попадают ни в командную строку, ни в git (проверяется SecretHygieneTests).
+
+[Unit]
+Description=RanDom editorial desk (loopback)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=randreport
+Group=randreport
+WorkingDirectory=/opt/randreport
+
+EnvironmentFile=/etc/randreport/admin.env
+Environment=RANREPORT_ADMIN_HOST=127.0.0.1
+Environment=RANREPORT_ADMIN_PORT=8098
+
+# loopback по умолчанию; внешняя публикация запрещена без двойного явного отказа
+ExecStart=/opt/randreport/.venv/bin/python -m randreport.admin serve --host 127.0.0.1 --port 8098
+
+Restart=always
+RestartSec=3
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+# столу нужна запись только в приватный store
+ReadWritePaths=/var/lib/randreport
+
+[Install]
+WantedBy=multi-user.target

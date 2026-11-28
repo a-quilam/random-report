@@ -1,0 +1,33 @@
+# Шаблон. Приём новых постов публичного канала без домена и без webhook.
+#
+# Тот же приватный inbox, что и у webhook (``telegram_inbox``): событие лишь
+# записывается, публикация — в 03:00.  Служба короткая и stateless: она
+# проверяет ``getWebhookInfo`` и отказывается работать, если webhook зарегистрирован
+# (чужой webhook и очередь не сбрасываются), затем один раз забирает
+# ``getUpdates`` (только channel_post/edited_channel_post разрешённого канала) и
+# сохраняет durable offset лишь после записи в inbox.
+#
+# Токен и канал приходят только из локального EnvironmentFile сервисного
+# пользователя с правами 0600; в командной строке секретов нет.
+
+[Unit]
+Description=RanDom public post intake (getUpdates poll, no webhook)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=randreport
+Group=randreport
+WorkingDirectory=/opt/randreport
+EnvironmentFile=/etc/randreport/randreport.env
+ExecStart=/opt/randreport/.venv/bin/python -m randreport.ops.cli getupdates
+TimeoutStartSec=5min
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/var/lib/randreport

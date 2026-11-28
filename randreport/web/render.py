@@ -669,11 +669,14 @@ def coverage_bar(
             f"{alt}</details>"
         )
     if owner_sheet:
+        # the owner's sheet shows only the bar, the 0/100 scale and the stamp;
+        # the legend and the text alternative stay in the document for assistive
+        # technology, visually hidden (the approved mock has no disclosure here)
         return (f'<figure class="coverage"><div class="segments-bar"><svg class="coverage-bar" '
                 f'viewBox="0 0 100 10" preserveAspectRatio="none" role="img" aria-label="{e(label_text)}">'
-                f'{"".join(rects)}</svg></div><div class="bar-scale"><span>0</span><span>100,0 %</span></div>'
-                f'<details><summary>Из чего сложилось покрытие?</summary><ul class="coverage-legend">'
-                f'{"".join(legend)}</ul>{alt}</details></figure>')
+                f'{"".join(rects)}</svg></div><div class="bar-scale"><span>0</span><span>100%</span></div>'
+                f'<div class="visually-hidden"><ul class="coverage-legend">'
+                f'{"".join(legend)}</ul>{alt}</div></figure>')
     return (
         f'<figure class="coverage">'
         f'<figcaption>Покрытие расходов: <strong>{e(headline)}</strong>{marker}</figcaption>'
